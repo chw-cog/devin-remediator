@@ -11,4 +11,4 @@ RUN deno check src/index.ts
 
 EXPOSE 8000
 ENTRYPOINT ["deno"]
-CMD ["run", "--cached-only", "--allow-net", "--allow-read", "--allow-write=/data", "--allow-ffi", "--allow-sys=cpus,networkInterfaces,hostname", "--allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS", "src/index.ts"]
+CMD ["run", "--cached-only", "--allow-net", "--allow-read", "--allow-write=/data", "--allow-ffi", "--allow-sys=cpus,networkInterfaces,hostname", "--allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV", "src/index.ts"]

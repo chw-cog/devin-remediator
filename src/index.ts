@@ -33,8 +33,6 @@ if (import.meta.main) {
   const env = {
     DEVIN_API_KEY: Deno.env.get("DEVIN_API_KEY"),
     DEVIN_ORGANIZATION_ID: Deno.env.get("DEVIN_ORGANIZATION_ID"),
-    GITHUB_WEBHOOK_SECRET: Deno.env.get("GITHUB_WEBHOOK_SECRET"),
-    SQLITE_DB_FILEPATH: Deno.env.get("SQLITE_DB_FILEPATH"),
     DEVIN_MAX_CONCURRENT_SESSIONS: Deno.env.get(
       "DEVIN_MAX_CONCURRENT_SESSIONS",
     ),
@@ -45,6 +43,8 @@ if (import.meta.main) {
     DEVIN_SUBMITTING_TIMEOUT_SECONDS: Deno.env.get(
       "DEVIN_SUBMITTING_TIMEOUT_SECONDS",
     ),
+    GITHUB_WEBHOOK_SECRET: Deno.env.get("GITHUB_WEBHOOK_SECRET"),
+    SQLITE_DB_FILEPATH: Deno.env.get("SQLITE_DB_FILEPATH"),
   };
   const ConfigLive = ConfigProvider.layer(ConfigProvider.fromUnknown(env));
   DenoRuntime.runMain(

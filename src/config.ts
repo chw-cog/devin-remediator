@@ -10,10 +10,6 @@ const positiveInt = (name: string, fallback: number) =>
 export const AppConfig = Config.all({
   devinApiKey: Config.String("DEVIN_API_KEY"),
   devinOrganizationId: Config.String("DEVIN_ORGANIZATION_ID"),
-  githubWebhookSecret: Config.String("GITHUB_WEBHOOK_SECRET"),
-  sqliteDbFilepath: Config.String("SQLITE_DB_FILEPATH").pipe(
-    Config.withDefault("./devin-remediator.sqlite"),
-  ),
   devinMaxConcurrentSessions: positiveInt("DEVIN_MAX_CONCURRENT_SESSIONS", 3),
   devinMaxAttempts: positiveInt("DEVIN_MAX_ATTEMPTS", 3),
   devinOrchestratorIntervalMs: positiveInt(
@@ -23,6 +19,10 @@ export const AppConfig = Config.all({
   devinSubmittingTimeoutSeconds: positiveInt(
     "DEVIN_SUBMITTING_TIMEOUT_SECONDS",
     60,
+  ),
+  githubWebhookSecret: Config.String("GITHUB_WEBHOOK_SECRET"),
+  sqliteDbFilepath: Config.String("SQLITE_DB_FILEPATH").pipe(
+    Config.withDefault("./devin-remediator.sqlite"),
   ),
 });
 

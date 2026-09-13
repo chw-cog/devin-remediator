@@ -21,12 +21,12 @@ Deno.test("AppConfig loads settings from the supplied config layer", async () =>
     assert.deepEqual(config, {
       devinApiKey: key,
       devinOrganizationId: "org-test",
-      githubWebhookSecret: `${key}-webhook-secret`,
-      sqliteDbFilepath: `./${key}.sqlite`,
       devinMaxConcurrentSessions: 3,
       devinMaxAttempts: 3,
       devinOrchestratorIntervalMs: 3000,
       devinSubmittingTimeoutSeconds: 60,
+      githubWebhookSecret: `${key}-webhook-secret`,
+      sqliteDbFilepath: `./${key}.sqlite`,
     });
   }
 });

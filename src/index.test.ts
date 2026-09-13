@@ -39,10 +39,10 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
       DEVIN_API_KEY: "test-key",
       DEVIN_ORGANIZATION_ID: "org-test",
-      GITHUB_WEBHOOK_SECRET: "test-secret",
-      SQLITE_DB_FILEPATH: ":memory:",
       DEVIN_MAX_CONCURRENT_SESSIONS: "1",
       DEVIN_ORCHESTRATOR_INTERVAL_MS: "5",
+      GITHUB_WEBHOOK_SECRET: "test-secret",
+      SQLITE_DB_FILEPATH: ":memory:",
     }))),
   );
   await Effect.runPromise(

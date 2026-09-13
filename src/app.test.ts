@@ -8,10 +8,10 @@ import { EventHandler } from "./event_handler.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 const testEnv = {
-  SQLITE_DB_FILEPATH: ":memory:",
   DEVIN_API_KEY: "cog_test-key",
   DEVIN_ORGANIZATION_ID: "org-test",
   GITHUB_WEBHOOK_SECRET: "test-webhook-secret",
+  SQLITE_DB_FILEPATH: ":memory:",
 };
 const pushBody = JSON.stringify({
   repository: { full_name: "owner/repo" },

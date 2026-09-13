@@ -25,18 +25,29 @@ interrupts and joins the orchestrator, drains HTTP requests, then closes SQLite.
 
 ## Run with Docker
 
-With the same three required environment variables set, run:
+Create a `.env` file in the repo root (ignored by Git):
+
+```dotenv
+DEVIN_API_KEY=dummy-devin-api-key
+DEVIN_ORGANIZATION_ID=dummy-devin-organization-id
+GITHUB_WEBHOOK_SECRET=dummy-github-webhook-secret
+SQLITE_DB_FILEPATH=/data/db.sql
+```
+
+The dummy values let the app start. Replace them before sending real webhooks or
+creating Devin sessions. Keep the database path under `/data`, then run:
 
 ```sh
-docker compose up --build -d
+docker compose up --build -d --wait
 curl --fail http://localhost:8000/health
 docker compose logs -f app
 ```
 
-Compose starts one app container. Its PID 1 is `deno run`, not `deno task` or a
-worker launcher. The `sqlite-data` volume stores
-`/data/devin-remediator.sqlite`. Startup applies migrations in the app process.
-`docker compose down` preserves the volume; adding `--volumes` deletes it.
+Compose runs only `app` with the Dockerfile's unchanged default command. The
+`sqlite-data` volume mounts at `/data` and stores `db.sql`. The app applies
+migrations before listening, so migration failures prevent startup. The app
+health check waits for `/health` to respond successfully. `docker compose down`
+preserves the volume; adding `--volumes` deletes it.
 
 ## Endpoints
 
