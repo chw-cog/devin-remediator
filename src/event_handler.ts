@@ -1,6 +1,8 @@
-import { type EmitterWebhookEvent, Webhooks } from "@octokit/webhooks";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Webhooks } from "@octokit/webhooks";
+import { Context, DateTime, Effect, Layer, Schema } from "effect";
 import { AppConfig } from "./config.ts";
+import { DatabaseClient } from "./database.ts";
+import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 type WebhookDelivery = {
   id: string;
@@ -14,15 +16,13 @@ export class EventHandlerError extends Schema.TaggedError<EventHandlerError>()(
   { cause: Schema.Defect() },
 ) {}
 
-const issuesLabeled = Effect.fn("EventHandler.issuesLabeled")(
-  function* ({ payload }: EmitterWebhookEvent<"issues.labeled">) {
-    const { repository, issue, label } = payload;
-    yield* Effect.logInfo(
-      `Label ${
-        label?.name ?? "(unknown)"
-      } added to issue ${repository.full_name}#${issue.number}`,
-    );
-  },
+const decodePayload = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({
+    repository: Schema.Struct({ full_name: Schema.NonEmptyString }),
+    issue: Schema.optional(Schema.Struct({
+      number: Schema.Int.check(Schema.isGreaterThan(0)),
+    })),
+  })),
 );
 
 export class EventHandler extends Context.Service<EventHandler, {
@@ -34,20 +34,54 @@ export class EventHandler extends Context.Service<EventHandler, {
     EventHandler,
     Effect.gen(function* () {
       const config = yield* AppConfig;
+      const { db } = yield* DatabaseClient;
       const webhooks = new Webhooks({ secret: config.githubWebhookSecret });
-      const runPromise = Effect.runPromiseWith(yield* Effect.context());
-
-      webhooks.on(
-        "issues.labeled",
-        (event) => runPromise(issuesLabeled(event)),
-      );
 
       const receive = Effect.fn("EventHandler.receive")(
-        (event: WebhookDelivery) =>
-          Effect.tryPromise({
-            try: () => webhooks.verifyAndReceive(event),
+        function* (event: WebhookDelivery) {
+          const verified = yield* Effect.tryPromise({
+            try: () => webhooks.verify(event.payload, event.signature),
             catch: (cause) => new EventHandlerError({ cause }),
-          }),
+          });
+          if (!verified) {
+            return yield* new EventHandlerError({
+              cause: new Error("Invalid webhook signature"),
+            });
+          }
+
+          const payload = yield* decodePayload(event.payload).pipe(
+            Effect.mapError((cause) => new EventHandlerError({ cause })),
+          );
+          const insertedAt = DateTime.formatIso(yield* DateTime.now);
+
+          yield* db.transaction((tx) =>
+            Effect.gen(function* () {
+              const inserted = yield* tx.insert(githubWebhookDeliveries).values(
+                {
+                  id: crypto.randomUUID(),
+                  deliveryId: event.id,
+                  eventName: event.name,
+                  repo: payload.repository.full_name,
+                  issueNumber: payload.issue?.number,
+                  payload: event.payload,
+                  insertedAt,
+                },
+              ).onConflictDoNothing({
+                target: githubWebhookDeliveries.deliveryId,
+              }).returning({ id: githubWebhookDeliveries.id });
+
+              if (inserted.length === 0) return;
+
+              yield* tx.insert(devinSessions).values({
+                id: crypto.randomUUID(),
+                githubDeliveryId: event.id,
+                status: "pending",
+                insertedAt,
+                updatedAt: insertedAt,
+              }).run();
+            })
+          ).pipe(Effect.mapError((cause) => new EventHandlerError({ cause })));
+        },
       );
 
       return EventHandler.of({ receive });
