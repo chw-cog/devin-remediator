@@ -1,4 +1,4 @@
-import { Context, Effect, flow, Layer, Schema } from "effect";
+import { type Cause, Context, Effect, flow, Layer, Schema } from "effect";
 import {
   FetchHttpClient,
   type HttpBody,
@@ -46,7 +46,7 @@ export const CreateSessionParams = Schema.Struct({
 export type CreateSessionParams = typeof CreateSessionParams.Type;
 
 export const DevinSession = Schema.Struct({
-  session_id: Schema.String,
+  session_id: Schema.NonEmptyString,
   url: Schema.String,
   status: Schema.Literals([
     "new",
@@ -102,6 +102,90 @@ export const DevinSession = Schema.Struct({
 
 export type DevinSession = typeof DevinSession.Type;
 
+export type SessionState = {
+  readonly status: "running" | "succeeded" | "failed";
+  readonly pullRequestUrls: ReadonlyArray<string>;
+};
+
+export function interpretSession(session: DevinSession): SessionState {
+  let status: SessionState["status"];
+  switch (session.status) {
+    case "error":
+    case "suspended":
+      status = "failed";
+      break;
+    case "exit":
+      status = session.status_detail === "finished" ? "succeeded" : "failed";
+      break;
+    case "running":
+      status = session.status_detail === "finished" ? "succeeded" : "running";
+      break;
+    case "new":
+    case "claimed":
+    case "resuming":
+      status = "running";
+      break;
+  }
+  return {
+    status,
+    pullRequestUrls: session.pull_requests.map((pr) => pr.pr_url),
+  };
+}
+
+const PullRequestUrl = Schema.String.check(
+  Schema.isPattern(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9]\d*\/?$/),
+);
+
+export function findPullRequestNumber(
+  urls: ReadonlyArray<string>,
+  repo: string,
+): number | null {
+  for (const url of urls) {
+    if (!Schema.is(PullRequestUrl)(url)) continue;
+    const parts = new URL(url).pathname.split("/");
+    if (`${parts[1]}/${parts[2]}`.toLowerCase() !== repo.toLowerCase()) {
+      continue;
+    }
+    const number = Number(parts[4]);
+    if (Schema.is(Schema.Int)(number)) return number;
+  }
+  return null;
+}
+
+export class DevinSubmissionError extends Schema.TaggedError<
+  DevinSubmissionError
+>()("DevinSubmissionError", {
+  disposition: Schema.Literals(["retryable", "permanent", "ambiguous"]),
+  httpStatus: Schema.optional(Schema.Int),
+}) {}
+
+function submissionError(
+  error:
+    | HttpBody.HttpBodyError
+    | HttpClientError.HttpClientError
+    | Schema.SchemaError
+    | { readonly _tag: "TimeoutError" },
+): DevinSubmissionError {
+  if (error._tag === "HttpBodyError") {
+    return new DevinSubmissionError({ disposition: "permanent" });
+  }
+  if (
+    error._tag === "HttpClientError" &&
+    error.reason._tag === "StatusCodeError"
+  ) {
+    const httpStatus = error.reason.response.status;
+    return new DevinSubmissionError({
+      httpStatus,
+      disposition: httpStatus === 429
+        ? "retryable"
+        : httpStatus === 408 || httpStatus >= 500
+        ? "ambiguous"
+        : "permanent",
+    });
+  }
+  return new DevinSubmissionError({ disposition: "ambiguous" });
+}
+
 const SessionPage = Schema.Struct({
   items: Schema.Array(DevinSession),
   has_next_page: Schema.optional(Schema.Boolean),
@@ -117,9 +201,11 @@ const encodeSessionBody = HttpClientRequest.schemaBodyJson(CreateSessionParams);
 export class DevinClient extends Context.Service<DevinClient, {
   readonly createSession: (params: CreateSessionParams) => Effect.Effect<
     DevinSession,
-    | HttpBody.HttpBodyError
-    | HttpClientError.HttpClientError
-    | Schema.SchemaError
+    DevinSubmissionError
+  >;
+  readonly getSession: (id: string) => Effect.Effect<
+    SessionState,
+    HttpClientError.HttpClientError | Schema.SchemaError | Cause.TimeoutError
   >;
   readonly listSessions: (session_ids: ReadonlyArray<string>) => Effect.Effect<
     ReadonlyArray<DevinSession>,
@@ -147,7 +233,17 @@ export class DevinClient extends Context.Service<DevinClient, {
           encodeSessionBody(HttpClientRequest.post("/sessions"), params).pipe(
             Effect.flatMap(client.execute),
             Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
+            Effect.timeout("30 seconds"),
+            Effect.mapError(submissionError),
           ),
+      );
+
+      const getSession = Effect.fn("DevinClient.getSession")((id: string) =>
+        client.get(`/sessions/${encodeURIComponent(id)}`).pipe(
+          Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
+          Effect.map(interpretSession),
+          Effect.timeout("30 seconds"),
+        )
       );
 
       const listSessions = Effect.fn("DevinClient.listSessions")(
@@ -164,7 +260,7 @@ export class DevinClient extends Context.Service<DevinClient, {
           ),
       );
 
-      return DevinClient.of({ createSession, listSessions });
+      return DevinClient.of({ createSession, getSession, listSessions });
     }),
   ).pipe(Layer.provide(FetchHttpClient.layer));
 }

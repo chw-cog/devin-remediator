@@ -1,0 +1,9 @@
+.git
+.agents
+.pi
+.vscode
+node_modules
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env*

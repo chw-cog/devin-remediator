@@ -22,6 +22,8 @@ export const createApp = Effect.gen(function* () {
   const runPromise = Effect.runPromiseWith(yield* Effect.context());
   const app = new Hono();
 
+  app.get("/health", (c) => c.json({ status: "ok" }));
+
   app.post("/api/v1/webhook", (c) =>
     runPromise(
       Effect.gen(function* () {

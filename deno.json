@@ -4,10 +4,10 @@
     "exclude": [".agents/", ".pi/"]
   },
   "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV --watch src/index.ts",
-    "start": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV src/index.ts",
+    "dev": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS --watch src/index.ts",
+    "start": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS src/index.ts",
     "check": "deno fmt --check && deno lint && deno check src/*.ts drizzle.config.ts",
-    "test": "deno test --allow-read --allow-ffi --allow-env=LIBSQL_JS_DEV",
+    "test": "deno test --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-net=127.0.0.1 --allow-env=LIBSQL_JS_DEV",
     "db:generate": "deno run -A npm:drizzle-kit@1.0.0-rc.5-5935859 generate"
   },
   "imports": {

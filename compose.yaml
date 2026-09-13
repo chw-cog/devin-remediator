@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DEVIN_API_KEY: ${DEVIN_API_KEY:?Set DEVIN_API_KEY}
+      DEVIN_ORGANIZATION_ID: ${DEVIN_ORGANIZATION_ID:?Set DEVIN_ORGANIZATION_ID}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?Set GITHUB_WEBHOOK_SECRET}
+      SQLITE_DB_FILEPATH: /data/devin-remediator.sqlite
+      DEVIN_MAX_CONCURRENT_SESSIONS: ${DEVIN_MAX_CONCURRENT_SESSIONS:-3}
+      DEVIN_MAX_ATTEMPTS: ${DEVIN_MAX_ATTEMPTS:-3}
+      DEVIN_ORCHESTRATOR_INTERVAL_MS: ${DEVIN_ORCHESTRATOR_INTERVAL_MS:-3000}
+      DEVIN_SUBMITTING_TIMEOUT_SECONDS: ${DEVIN_SUBMITTING_TIMEOUT_SECONDS:-60}
+    volumes:
+      - sqlite-data:/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  sqlite-data:

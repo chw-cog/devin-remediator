@@ -1,8 +1,9 @@
-# Webhook receiver
+# Devin remediator
 
 A Deno app using Hono, Effect, Octokit, and Drizzle's native Effect adapter for
-local libSQL. Database files are SQLite-compatible; no remote database service
-is required.
+local libSQL. One Deno 2.9.6 process runs the HTTP server and
+`DevinSessionOrchestrator`. SQLite holds the durable queue and remote session
+identities. No external queue or worker process is required.
 
 ## Run locally
 
@@ -20,9 +21,27 @@ The server listens on `http://localhost:8000`. Use `deno task dev` for watch
 mode. If Deno is managed by mise, prefix commands with `mise exec --`. Startup
 opens one shared SQLite connection and applies migrations before listening.
 SQLite uses WAL mode and enables foreign keys. Shutdown on `SIGINT` or `SIGTERM`
-drains requests before closing the connection.
+interrupts and joins the orchestrator, drains HTTP requests, then closes SQLite.
 
-## Endpoint
+## Run with Docker
+
+With the same three required environment variables set, run:
+
+```sh
+docker compose up --build -d
+curl --fail http://localhost:8000/health
+docker compose logs -f app
+```
+
+Compose starts one app container. Its PID 1 is `deno run`, not `deno task` or a
+worker launcher. The `sqlite-data` volume stores
+`/data/devin-remediator.sqlite`. Startup applies migrations in the app process.
+`docker compose down` preserves the volume; adding `--volumes` deletes it.
+
+## Endpoints
+
+`GET /health` returns `200` with `{"status":"ok"}`. This is process liveness,
+not Devin availability or queue progress. It makes no database or Devin calls.
 
 `POST /api/v1/webhook` accepts a JSON object with these headers:
 
@@ -48,8 +67,26 @@ invalid repository or issue metadata also return a generic `500`. Missing or
 empty required server configuration prevents startup.
 
 All supported events queue a session, not only `issues.labeled`. The receiver
-does not call Devin. Worker claiming, API submission, and session updates are
-not implemented.
+does not call Devin. The orchestrator reads the committed work independently.
+
+## Orchestrator configuration
+
+These optional environment variables accept positive integers. Invalid values
+prevent startup.
+
+| Variable                           | Default | Meaning                                                          |
+| ---------------------------------- | ------- | ---------------------------------------------------------------- |
+| `DEVIN_MAX_CONCURRENT_SESSIONS`    | `3`     | Maximum local `submitting` plus `running` records                |
+| `DEVIN_MAX_ATTEMPTS`               | `3`     | Maximum reserved submission attempts per delivery                |
+| `DEVIN_ORCHESTRATOR_INTERVAL_MS`   | `3000`  | Delay after each completed tick                                  |
+| `DEVIN_SUBMITTING_TIMEOUT_SECONDS` | `60`    | Age at which an unknown submission becomes eligible for recovery |
+
+`DEVIN_API_KEY` and `DEVIN_ORGANIZATION_ID` configure the existing Devin v3
+organization API client. Create and get requests time out after 30 seconds. The
+API key must permit session creation and inspection in that organization.
+
+See [orchestration behavior and limitations](docs/orchestration.md) for the
+state transitions, retry policy, and remote-creation ambiguity.
 
 ## Database schemas and migrations
 
@@ -70,13 +107,21 @@ connection, applies migrations, and closes the connection when its scope ends.
 `createApp` in `src/app.ts` is an Effect requiring `EventHandler`. Routes run
 request effects with the captured service context.
 
-`src/index.ts` composes the database, event handler, and config provider layers
-once. Tests use the same layers with `SQLITE_DB_FILEPATH: ":memory:"` in their
-config provider. There are no `withConfig` or `withDatabase` wrappers.
+`src/index.ts` composes the event handler, Devin client, session repository,
+orchestrator, and config provider over one database layer. `runApplication`
+acquires the Hono server and forks `DevinSessionOrchestrator.run` with
+`Effect.forkScoped`. Both use the application's Effect context.
+
+`tick` performs one iteration; `run` repeats it with `Effect.sleep`. Tests
+normally call `tick` with a fake Devin client and a fresh migrated SQLite
+database.
 
 Drizzle ORM and Kit are pinned to `1.0.0-rc.5-5935859` for compatibility with
 Effect `4.0.0-rc.115`. The `effect-sqlite-node` driver needs a `node:sqlite` API
-that this project's Deno version lacks, so the app uses `effect-libsql`.
+that this project's Deno version lacks, so the app uses `effect-libsql`. On
+Linux, libSQL's native loader detects glibc through `process.report.getReport`.
+The run and test commands grant `--allow-sys=cpus,networkInterfaces,hostname`
+for that Deno compatibility path.
 
 ### Schema decisions
 
@@ -88,22 +133,13 @@ that this project's Deno version lacks, so the app uses `effect-libsql`.
   rows.
 - SQLite checks enforce the five statuses and nonnegative attempts. Drizzle's
   text enum alone only constrains TypeScript.
-- Timestamps are UTC ISO strings. Both rows share the insertion time. Future
-  worker updates must also set `updated_at`.
+- Timestamps are UTC ISO strings. Both rows share the insertion time. Every
+  lifecycle update sets `updated_at` using Effect's clock.
 - Unique `github_delivery_id` permits one session per delivery, not per issue.
   Separate GitHub deliveries for the same issue can queue separate sessions.
 
-### Before adding the worker
-
-Consider a claim lease (`claimed_at` or `lease_expires_at`) for recovering tasks
-stuck in `submitting`, `next_attempt_at` for retry scheduling, and `last_error`
-for diagnosis. Add an index matching the worker's pending-task query, such as
-`(status, inserted_at)`.
-
-A transaction cannot cover the external Devin API call. A crash after Devin
-creates a session but before its ID is saved needs an API idempotency key, if
-supported, or reconciliation before retrying. `attempts` alone cannot prevent
-duplicate external sessions.
+The orchestrator adds no tables, columns, indexes, or migrations. `status`,
+`attempts`, `updated_at`, and `devin_session_id` cover the required state.
 
 ## Check
 
@@ -114,7 +150,15 @@ deno task test
 
 Tests send signed requests directly to Hono and inspect migrated, in-memory
 SQLite databases. They cover rollback, duplicate deliveries, HMAC failures,
-constraints, and resource cleanup. The test task grants read and FFI permissions
-for migrations and the native driver, plus access to the driver's
-`LIBSQL_JS_DEV` environment variable. Tests need no network permissions and do
-not call GitHub or Devin.
+constraints, and resource cleanup. Orchestrator tests cover transactional
+claims, capacity, overlapping ticks, retries, stale recovery, reconciliation, PR
+parsing, and the create/persist failure boundary. A restart test closes and
+reopens a temporary SQLite file. A loopback HTTP test checks webhook
+responsiveness during submission and application shutdown.
+
+The test task grants filesystem access for temporary SQLite files, FFI for the
+driver, loopback network access, and the driver's `LIBSQL_JS_DEV` environment
+variable. Tests cannot reach the real Devin API and do not call GitHub.
+`deno task check` runs formatting, lint, and TypeScript checks. There is no
+separate JavaScript build step; `docker compose build` also checks the
+entrypoint.

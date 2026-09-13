@@ -1,8 +1,15 @@
 import { strict as assert } from "node:assert";
-import { ConfigProvider, Effect, Result } from "effect";
+import { ConfigProvider, Effect, Fiber, Result } from "effect";
+import { TestClock } from "effect/testing";
 import { FetchHttpClient } from "effect/unstable/http";
 import type { Env } from "./config.ts";
-import { DevinClient } from "./devin.ts";
+import {
+  DevinClient,
+  type DevinSubmissionError,
+  findPullRequestNumber,
+} from "./devin.ts";
+import type { Schema } from "effect";
+import type { HttpClientError } from "effect/unstable/http";
 
 const testEnv = {
   DEVIN_API_KEY: "cog_test-key",
@@ -203,20 +210,39 @@ Deno.test("both methods surface HTTP failures without retrying", async (t) => {
     ) {
       await t.step(`${name} ${status}`, async () => {
         let calls = 0;
-        const result = await runWithFetch(Effect.result(effect), () => {
+        const request: Effect.Effect<
+          void,
+          | DevinSubmissionError
+          | HttpClientError.HttpClientError
+          | Schema.SchemaError,
+          DevinClient
+        > = effect;
+        const result = await runWithFetch(Effect.result(request), () => {
           calls++;
           return Promise.resolve(new Response("API error", { status }));
         });
         assert.ok(Result.isFailure(result));
-        assert.equal(result.failure._tag, "HttpClientError");
-        if (result.failure._tag !== "HttpClientError") {
-          assert.fail("Expected HTTP error");
+        if (result.failure._tag === "DevinSubmissionError") {
+          assert.equal(result.failure.httpStatus, status);
+          assert.equal(
+            result.failure.disposition,
+            status === 429
+              ? "retryable"
+              : status >= 500
+              ? "ambiguous"
+              : "permanent",
+          );
+        } else {
+          assert.equal(result.failure._tag, "HttpClientError");
+          if (result.failure._tag !== "HttpClientError") {
+            assert.fail("Expected HTTP error");
+          }
+          assert.equal(result.failure.reason._tag, "StatusCodeError");
+          if (result.failure.reason._tag !== "StatusCodeError") {
+            assert.fail("Expected status error");
+          }
+          assert.equal(result.failure.reason.response.status, status);
         }
-        assert.equal(result.failure.reason._tag, "StatusCodeError");
-        if (result.failure.reason._tag !== "StatusCodeError") {
-          assert.fail("Expected status error");
-        }
-        assert.equal(result.failure.reason.response.status, status);
         assert.equal(calls, 1);
       });
     }
@@ -225,21 +251,18 @@ Deno.test("both methods surface HTTP failures without retrying", async (t) => {
 
 Deno.test("invalid JSON, invalid session data, and network errors fail", async (t) => {
   for (
-    const [name, fetch, tag] of [
+    const [name, fetch] of [
       [
         "invalid JSON",
         () => Promise.resolve(new Response("{")),
-        "HttpClientError",
       ],
       [
         "invalid session",
         () => Promise.resolve(Response.json({ session_id: 42 })),
-        "SchemaError",
       ],
       [
         "network error",
         () => Promise.reject(new TypeError("Network unavailable")),
-        "HttpClientError",
       ],
     ] as const
   ) {
@@ -254,7 +277,8 @@ Deno.test("invalid JSON, invalid session data, and network errors fail", async (
         fetch,
       );
       assert.ok(Result.isFailure(result));
-      assert.equal(result.failure._tag, tag);
+      assert.equal(result.failure._tag, "DevinSubmissionError");
+      assert.equal(result.failure.disposition, "ambiguous");
     });
   }
   const result = await runWithFetch(
@@ -266,6 +290,99 @@ Deno.test("invalid JSON, invalid session data, and network errors fail", async (
   );
   assert.ok(Result.isFailure(result));
   assert.equal(result.failure._tag, "SchemaError");
+});
+
+Deno.test("getSession encodes IDs, authenticates, and interprets provider states", async () => {
+  for (
+    const [status, detail, expected] of [
+      ["new", null, "running"],
+      ["claimed", null, "running"],
+      ["resuming", null, "running"],
+      ["running", "working", "running"],
+      ["running", "waiting_for_user", "running"],
+      ["running", "waiting_for_approval", "running"],
+      ["running", "finished", "succeeded"],
+      ["exit", "finished", "succeeded"],
+      ["exit", null, "failed"],
+      ["suspended", "out_of_credits", "failed"],
+      ["error", "finished", "failed"],
+    ]
+  ) {
+    const result = await runWithFetch(
+      DevinClient.use((client) => client.getSession("devin-/?#")),
+      (input, init) => {
+        assert.equal(
+          String(input),
+          "https://api.devin.ai/v3/organizations/org-test/sessions/devin-%2F%3F%23",
+        );
+        assert.equal(init?.method, "GET");
+        assert.equal(
+          new Headers(init?.headers).get("authorization"),
+          "Bearer cog_test-key",
+        );
+        return Promise.resolve(Response.json({
+          ...session,
+          status,
+          status_detail: detail,
+          pull_requests: [{
+            pr_url: "https://github.com/owner/repo/pull/42",
+            pr_state: "open",
+          }],
+        }));
+      },
+    );
+    assert.deepEqual(result, {
+      status: expected,
+      pullRequestUrls: ["https://github.com/owner/repo/pull/42"],
+    });
+  }
+});
+
+Deno.test("PR extraction ignores invalid, unrelated, and unsafe numbers", () => {
+  assert.equal(
+    findPullRequestNumber([
+      "https://evil.example/owner/repo/pull/1",
+      "https://github.com/other/repo/pull/2",
+      "https://github.com/owner/repo/issues/3",
+      "https://github.com/owner/repo/pull/0",
+      "https://github.com/owner/repo/pull/9007199254740992",
+      "https://github.com/OWNER/REPO/pull/42",
+    ], "owner/repo"),
+    42,
+  );
+  assert.equal(findPullRequestNumber(["not a URL"], "owner/repo"), null);
+});
+
+Deno.test("createSession timeout aborts the request and reports an ambiguous outcome without retrying", async () => {
+  const started = Promise.withResolvers<void>();
+  let calls = 0;
+  let aborted = false;
+  await runWithFetch(
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      const fiber = yield* client.createSession({ prompt: "Fix CI" }).pipe(
+        Effect.result,
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() => started.promise);
+      yield* TestClock.adjust("30 seconds");
+      const result = yield* Fiber.join(fiber);
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.disposition, "ambiguous");
+      assert.equal(aborted, true);
+      assert.equal(calls, 1);
+    }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
+    (_input, init) => {
+      calls++;
+      started.resolve();
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+    },
+  );
 });
 
 Deno.test("DevinClient.layer uses config for authentication and organization URLs", async () => {

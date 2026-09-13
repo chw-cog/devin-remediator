@@ -1,0 +1,14 @@
+FROM denoland/deno:2.9.6
+
+WORKDIR /app
+RUN mkdir -p /data && chown deno:deno /app /data
+COPY --chown=deno:deno deno.json deno.lock ./
+USER deno
+RUN deno install --frozen
+COPY --chown=deno:deno src ./src
+COPY --chown=deno:deno migrations ./migrations
+RUN deno check src/index.ts
+
+EXPOSE 8000
+ENTRYPOINT ["deno"]
+CMD ["run", "--cached-only", "--allow-net", "--allow-read", "--allow-write=/data", "--allow-ffi", "--allow-sys=cpus,networkInterfaces,hostname", "--allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS", "src/index.ts"]

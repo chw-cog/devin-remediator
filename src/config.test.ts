@@ -23,7 +23,38 @@ Deno.test("AppConfig loads settings from the supplied config layer", async () =>
       devinOrganizationId: "org-test",
       githubWebhookSecret: `${key}-webhook-secret`,
       sqliteDbFilepath: `./${key}.sqlite`,
+      devinMaxConcurrentSessions: 3,
+      devinMaxAttempts: 3,
+      devinOrchestratorIntervalMs: 3000,
+      devinSubmittingTimeoutSeconds: 60,
     });
+  }
+});
+
+Deno.test("orchestrator settings accept positive integers and reject invalid values", async () => {
+  for (
+    const [name, field] of [
+      ["DEVIN_MAX_CONCURRENT_SESSIONS", "devinMaxConcurrentSessions"],
+      ["DEVIN_MAX_ATTEMPTS", "devinMaxAttempts"],
+      ["DEVIN_ORCHESTRATOR_INTERVAL_MS", "devinOrchestratorIntervalMs"],
+      ["DEVIN_SUBMITTING_TIMEOUT_SECONDS", "devinSubmittingTimeoutSeconds"],
+    ] as const
+  ) {
+    for (const value of ["0", "-1", "1.5", "NaN", "Infinity", "invalid", "7"]) {
+      const result = await Effect.runPromise(AppConfig.pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+          ...env,
+          [name]: value,
+        }))),
+        Effect.result,
+      ));
+      if (value === "7") {
+        assert.ok(Result.isSuccess(result));
+        assert.equal(result.success[field], 7);
+      } else {
+        assert.ok(Result.isFailure(result), `${name}=${value}`);
+      }
+    }
   }
 });
 

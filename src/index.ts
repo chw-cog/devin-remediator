@@ -1,7 +1,42 @@
 import { ConfigProvider, Effect, Layer } from "effect";
 import { createApp } from "./app.ts";
 import { DatabaseClient } from "./database.ts";
+import { DevinClient } from "./devin.ts";
+import { DevinSessionOrchestrator } from "./devin_session_orchestrator.ts";
+import { DevinSessionRepository } from "./devin_session_repository.ts";
 import { EventHandler } from "./event_handler.ts";
+
+export const AppLive = Layer.merge(
+  EventHandler.layer,
+  DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(DevinSessionRepository.layer),
+    Layer.provide(DevinClient.layer),
+  ),
+).pipe(Layer.provide(DatabaseClient.layer));
+
+export const runApplication = (
+  options: Deno.ServeTcpOptions = { port: 8000 },
+) =>
+  Effect.scoped(Effect.gen(function* () {
+    const app = yield* createApp;
+    const orchestrator = yield* DevinSessionOrchestrator;
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() => Deno.serve(options, (request) => app.fetch(request))),
+      (server) => Effect.promise(() => server.shutdown()),
+    );
+    yield* orchestrator.run.pipe(Effect.forkScoped);
+    yield* Effect.promise(() => server.finished);
+  }));
+
+const waitForShutdown = Effect.callback<void>((resume) => {
+  const shutdown = () => resume(Effect.void);
+  Deno.addSignalListener("SIGINT", shutdown);
+  Deno.addSignalListener("SIGTERM", shutdown);
+  return Effect.sync(() => {
+    Deno.removeSignalListener("SIGINT", shutdown);
+    Deno.removeSignalListener("SIGTERM", shutdown);
+  });
+});
 
 if (import.meta.main) {
   const env = {
@@ -9,32 +44,23 @@ if (import.meta.main) {
     DEVIN_ORGANIZATION_ID: Deno.env.get("DEVIN_ORGANIZATION_ID"),
     GITHUB_WEBHOOK_SECRET: Deno.env.get("GITHUB_WEBHOOK_SECRET"),
     SQLITE_DB_FILEPATH: Deno.env.get("SQLITE_DB_FILEPATH"),
+    DEVIN_MAX_CONCURRENT_SESSIONS: Deno.env.get(
+      "DEVIN_MAX_CONCURRENT_SESSIONS",
+    ),
+    DEVIN_MAX_ATTEMPTS: Deno.env.get("DEVIN_MAX_ATTEMPTS"),
+    DEVIN_ORCHESTRATOR_INTERVAL_MS: Deno.env.get(
+      "DEVIN_ORCHESTRATOR_INTERVAL_MS",
+    ),
+    DEVIN_SUBMITTING_TIMEOUT_SECONDS: Deno.env.get(
+      "DEVIN_SUBMITTING_TIMEOUT_SECONDS",
+    ),
   };
   const ConfigLive = ConfigProvider.layer(ConfigProvider.fromUnknown(env));
-  const AppLive = EventHandler.layer.pipe(
-    Layer.provide(DatabaseClient.layer),
-    Layer.provide(ConfigLive),
+  await Effect.runPromise(
+    runApplication().pipe(
+      Effect.raceFirst(waitForShutdown),
+      Effect.provide(AppLive),
+      Effect.provide(ConfigLive),
+    ),
   );
-  const program = Effect.gen(function* () {
-    const app = yield* createApp;
-    const controller = new AbortController();
-    const shutdown = () => controller.abort();
-    const server = yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        Deno.addSignalListener("SIGINT", shutdown);
-        Deno.addSignalListener("SIGTERM", shutdown);
-        return Deno.serve(
-          { port: 8000, signal: controller.signal },
-          (request) => app.fetch(request),
-        );
-      }),
-      () =>
-        Effect.sync(() => {
-          Deno.removeSignalListener("SIGINT", shutdown);
-          Deno.removeSignalListener("SIGTERM", shutdown);
-        }),
-    );
-    yield* Effect.promise(() => server.finished);
-  });
-  await Effect.runPromise(program.pipe(Effect.provide(AppLive), Effect.scoped));
 }
