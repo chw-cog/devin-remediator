@@ -1,6 +1,7 @@
 import { Cause, Context, Effect, Layer, Schedule, Semaphore } from "effect";
 import { AppConfig } from "./config.ts";
 import { type DatabaseError } from "./database.ts";
+import { causeFields, errorFields, observe } from "./logging.ts";
 import {
   DevinClient,
   findPullRequestNumber,
@@ -18,12 +19,14 @@ import {
 } from "./webhook-event-processors.ts";
 
 const identifiers = ({ session, delivery }: SessionWork) => ({
-  id: session.id,
+  session_record_id: session.id,
   github_delivery_id: session.githubDeliveryId,
   repo: delivery.repo,
   issue_number: delivery.issueNumber,
   devin_session_id: session.devinSessionId,
   attempt: session.attempts,
+  claim_version: session.claimVersion,
+  github_event: delivery.eventName,
 });
 
 export class DevinSessionOrchestrator extends Context.Service<
@@ -44,6 +47,7 @@ export class DevinSessionOrchestrator extends Context.Service<
 
       const recover = Effect.fn("DevinSessionOrchestrator.recover")(
         function* (work: SessionWork) {
+          yield* Effect.logDebug("session.recovery_started");
           const result = yield* client.findSessionsByTag(
             deliveryTag(work.delivery.deliveryId),
           ).pipe(Effect.result);
@@ -51,7 +55,7 @@ export class DevinSessionOrchestrator extends Context.Service<
             yield* repository.recordRecoveryMiss(work.session, "unavailable");
             yield* Effect.logWarning(
               "Devin tag lookup unavailable or incomplete; retaining submitting",
-            );
+            ).pipe(Effect.annotateLogs(errorFields(result.failure)));
             return;
           }
           const matches = result.success;
@@ -61,6 +65,8 @@ export class DevinSessionOrchestrator extends Context.Service<
               "duplicate Devin delivery tag; automatic submission blocked",
             ).pipe(Effect.annotateLogs({
               devin_session_ids: matches.map((session) => session.session_id),
+              match_count: matches.length,
+              recovery_blocked: true,
             }));
             return;
           }
@@ -76,7 +82,10 @@ export class DevinSessionOrchestrator extends Context.Service<
                   : row.status === "failed"
                   ? "repeated empty tag lookup; submission attempts exhausted"
                   : "empty tag lookup; waiting for another lookup after grace period",
-              );
+              ).pipe(Effect.annotateLogs({
+                status: row.status,
+                recovery_empty_checks: row.recoveryEmptyChecks,
+              }));
             }
             return;
           }
@@ -85,7 +94,10 @@ export class DevinSessionOrchestrator extends Context.Service<
             work.session,
             remote.session_id,
           );
-          if (!saved) return;
+          if (!saved) {
+            yield* Effect.logDebug("session.claim_superseded");
+            return;
+          }
           const state = interpretSession(remote);
           if (state.status !== "running") {
             yield* repository.finish(
@@ -101,15 +113,19 @@ export class DevinSessionOrchestrator extends Context.Service<
             );
           }
           yield* Effect.logInfo("Devin session recovered by delivery tag").pipe(
-            Effect.annotateLogs({ devin_session_id: remote.session_id }),
+            Effect.annotateLogs({
+              devin_session_id: remote.session_id,
+              remote_status: state.status,
+            }),
           );
         },
+        observe("DevinSessionOrchestrator", "recover"),
         (effect, work) => effect.pipe(Effect.annotateLogs(identifiers(work))),
       );
 
       const reconcile = Effect.fn("DevinSessionOrchestrator.reconcile")(
         function* (work: RunningSession) {
-          yield* Effect.logInfo("reconciling Devin session");
+          yield* Effect.logDebug("session.reconciliation_started");
           const result = yield* client.getSession(work.session.devinSessionId)
             .pipe(
               Effect.result,
@@ -117,25 +133,44 @@ export class DevinSessionOrchestrator extends Context.Service<
           if (result._tag === "Failure") {
             yield* Effect.logWarning(
               "Devin reconciliation unavailable; retaining running session",
-            );
+            ).pipe(Effect.annotateLogs(errorFields(result.failure)));
             return;
           }
           const remote = result.success;
           if (remote.status === "running") return;
+          const prNumber = findPullRequestNumber(
+            remote.pullRequestUrls,
+            work.delivery.repo,
+          );
           const changed = yield* repository.finish(
             work,
             remote.status,
-            findPullRequestNumber(remote.pullRequestUrls, work.delivery.repo),
+            prNumber,
           );
-          if (changed) yield* Effect.logInfo(`Devin session ${remote.status}`);
+          if (changed) {
+            yield* Effect.logWithLevel(
+              remote.status === "failed" ? "Error" : "Info",
+            )(
+              "session.finished",
+            ).pipe(
+              Effect.annotateLogs({
+                status: remote.status,
+                pr_number: prNumber,
+              }),
+            );
+          }
         },
+        observe("DevinSessionOrchestrator", "reconcile"),
         (effect, work) => effect.pipe(Effect.annotateLogs(identifiers(work))),
       );
 
       const submit = Effect.fn("DevinSessionOrchestrator.submit")(
         function* (work: SessionWork) {
-          yield* Effect.logInfo("claimed Devin session record");
+          yield* Effect.logInfo("session.claimed");
           const processor = processors.get(work.delivery.eventName);
+          if (!processor) {
+            yield* Effect.logDebug("webhook.processor_missing");
+          }
           const result = yield* (processor
             ? processor(work.delivery, client)
             : Effect.succeed<WebhookEventOutcome>({ _tag: "Skipped" }))
@@ -145,7 +180,7 @@ export class DevinSessionOrchestrator extends Context.Service<
             if (error.disposition === "ambiguous") {
               yield* Effect.logWarning(
                 "submission outcome unknown; retaining submitting until recovery",
-              );
+              ).pipe(Effect.annotateLogs(errorFields(error)));
               return;
             }
             const rows = yield* repository.rejectSubmission(
@@ -153,11 +188,18 @@ export class DevinSessionOrchestrator extends Context.Service<
               error.disposition === "retryable",
             );
             for (const row of rows) {
-              yield* Effect.logInfo(
+              yield* Effect.logWithLevel(
+                row.status === "pending" ? "Warn" : "Error",
+              )(
                 row.status === "pending"
                   ? "submission retry scheduled"
                   : "Devin session failed",
-              ).pipe(Effect.annotateLogs({ http_status: error.httpStatus }));
+              ).pipe(
+                Effect.annotateLogs({
+                  ...errorFields(error),
+                  status: row.status,
+                }),
+              );
             }
             return;
           }
@@ -194,6 +236,7 @@ export class DevinSessionOrchestrator extends Context.Service<
             );
         },
         Effect.uninterruptible,
+        observe("DevinSessionOrchestrator", "submit"),
         (effect, work) =>
           effect.pipe(Effect.annotateLogs(identifiers(work))),
       );
@@ -211,16 +254,45 @@ export class DevinSessionOrchestrator extends Context.Service<
           concurrency: config.devinMaxConcurrentSessions,
           discard: true,
         });
-      }).pipe(ticks.withPermits(1));
+      }).pipe(
+        Effect.tapCause((cause) =>
+          Cause.hasInterrupts(cause) ? Effect.void : Effect.logError(
+            "Devin orchestration tick failed; retrying next interval",
+          ).pipe(Effect.annotateLogs({
+            ...causeFields(cause),
+            retry_delay_ms: config.devinOrchestratorIntervalMs,
+          }))
+        ),
+        observe("DevinSessionOrchestrator", "tick"),
+        (effect) =>
+          Effect.suspend(() =>
+            effect.pipe(
+              Effect.annotateLogs({ tick_id: crypto.randomUUID() }),
+            )
+          ),
+        ticks.withPermits(1),
+      );
 
       const run = tick.pipe(
         Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.logError(
-            "Devin orchestration tick failed; retrying next interval",
-          )
+          Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void
         ),
         Effect.andThen(Effect.sleep(config.devinOrchestratorIntervalMs)),
         Effect.forever,
+        (effect) =>
+          Effect.logInfo("orchestrator.started").pipe(
+            Effect.annotateLogs({
+              max_concurrent_sessions: config.devinMaxConcurrentSessions,
+              max_attempts: config.devinMaxAttempts,
+              poll_interval_ms: config.devinOrchestratorIntervalMs,
+              submitting_timeout_seconds: config.devinSubmittingTimeoutSeconds,
+            }),
+            Effect.andThen(effect),
+          ),
+        Effect.annotateLogs({
+          component: "DevinSessionOrchestrator",
+          operation: "run",
+        }),
       );
       return DevinSessionOrchestrator.of({ tick, run });
     }),

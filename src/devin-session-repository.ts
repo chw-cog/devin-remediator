@@ -12,6 +12,7 @@ import {
 import { Context, DateTime, Effect, Layer } from "effect";
 import { AppConfig } from "./config.ts";
 import { DatabaseClient, DatabaseError } from "./database.ts";
+import { observe } from "./logging.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 export type SessionRecord = typeof devinSessions.$inferSelect;
@@ -26,6 +27,19 @@ export type RunningSession = SessionWork & {
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const databaseError = (cause: unknown) => new DatabaseError({ cause });
+const observeClaim =
+  (operation: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>, claim: SessionRecord) =>
+    effect.pipe(
+      observe("DevinSessionRepository", operation),
+      Effect.annotateLogs({
+        session_record_id: claim.id,
+        github_delivery_id: claim.githubDeliveryId,
+        devin_session_id: claim.devinSessionId,
+        attempt: claim.attempts,
+        claim_version: claim.claimVersion,
+      }),
+    );
 const ownsClaim = (claim: SessionRecord) =>
   and(
     eq(devinSessions.id, claim.id),
@@ -94,6 +108,11 @@ export class DevinSessionRepository extends Context.Service<
             0,
             config.devinMaxConcurrentSessions - active.count,
           );
+          yield* Effect.logDebug("queue.capacity").pipe(Effect.annotateLogs({
+            active_sessions: active.count,
+            available_slots: capacity,
+            max_concurrent_sessions: config.devinMaxConcurrentSessions,
+          }));
           if (capacity === 0) return [];
 
           const pending = yield* tx.select({ id: devinSessions.id })
@@ -129,7 +148,15 @@ export class DevinSessionRepository extends Context.Service<
           ).where(inArray(devinSessions.id, claimed.map((row) => row.id)))
             .orderBy(asc(devinSessions.insertedAt), asc(devinSessions.id));
         })
-      ).pipe(Effect.mapError(databaseError));
+      ).pipe(
+        Effect.mapError(databaseError),
+        Effect.tap((rows) =>
+          Effect.logDebug("queue.claimed").pipe(
+            Effect.annotateLogs({ claimed_count: rows.length }),
+          )
+        ),
+        observe("DevinSessionRepository", "claimPending"),
+      );
 
       const claimStale = db.transaction((tx) =>
         Effect.gen(function* () {
@@ -160,7 +187,15 @@ export class DevinSessionRepository extends Context.Service<
             ),
           ).where(inArray(devinSessions.id, claimed.map((row) => row.id)));
         })
-      ).pipe(Effect.mapError(databaseError));
+      ).pipe(
+        Effect.mapError(databaseError),
+        Effect.tap((rows) =>
+          Effect.logDebug("queue.recovery_claimed").pipe(
+            Effect.annotateLogs({ claimed_count: rows.length }),
+          )
+        ),
+        observe("DevinSessionRepository", "claimStale"),
+      );
 
       const recordRecoveryMiss = Effect.fn(
         "DevinSessionRepository.recordRecoveryMiss",
@@ -183,6 +218,7 @@ export class DevinSessionRepository extends Context.Service<
           }).where(ownsClaim(claim)).returning();
         },
         Effect.mapError(databaseError),
+        observeClaim("recordRecoveryMiss"),
       );
 
       const findRunning = db.select({
@@ -202,6 +238,7 @@ export class DevinSessionRepository extends Context.Service<
             )
           ),
           Effect.mapError(databaseError),
+          observe("DevinSessionRepository", "findRunning"),
         );
 
       const markRunning = Effect.fn("DevinSessionRepository.markRunning")(
@@ -211,9 +248,17 @@ export class DevinSessionRepository extends Context.Service<
             devinSessionId,
             updatedAt: yield* nowIso,
           }).where(ownsClaim(claim)).returning({ id: devinSessions.id });
+          yield* Effect.logDebug("session.transition").pipe(
+            Effect.annotateLogs({
+              status: "running",
+              changed: rows.length === 1,
+              devin_session_id: devinSessionId,
+            }),
+          );
           return rows.length === 1;
         },
         Effect.mapError(databaseError),
+        observeClaim("markRunning"),
       );
 
       const markSkipped = Effect.fn("DevinSessionRepository.markSkipped")(
@@ -222,9 +267,16 @@ export class DevinSessionRepository extends Context.Service<
             status: "skipped",
             updatedAt: yield* nowIso,
           }).where(ownsClaim(claim)).returning({ id: devinSessions.id });
+          yield* Effect.logDebug("session.transition").pipe(
+            Effect.annotateLogs({
+              status: "skipped",
+              changed: rows.length === 1,
+            }),
+          );
           return rows.length === 1;
         },
         Effect.mapError(databaseError),
+        observeClaim("markSkipped"),
       );
 
       const rejectSubmission = Effect.fn(
@@ -239,6 +291,7 @@ export class DevinSessionRepository extends Context.Service<
           }).where(ownsClaim(claim)).returning();
         },
         Effect.mapError(databaseError),
+        observeClaim("rejectSubmission"),
       );
 
       const finish = Effect.fn("DevinSessionRepository.finish")(
@@ -256,9 +309,17 @@ export class DevinSessionRepository extends Context.Service<
             eq(devinSessions.status, "running"),
             eq(devinSessions.devinSessionId, work.session.devinSessionId),
           )).returning({ id: devinSessions.id });
+          yield* Effect.logDebug("session.transition").pipe(
+            Effect.annotateLogs({
+              status,
+              pr_number: prNumber,
+              changed: rows.length === 1,
+            }),
+          );
           return rows.length === 1;
         },
         Effect.mapError(databaseError),
+        (effect, work) => observeClaim("finish")(effect, work.session),
       );
 
       return DevinSessionRepository.of({

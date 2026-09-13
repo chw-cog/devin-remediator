@@ -8,6 +8,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 import { AppConfig } from "./config.ts";
+import { observe } from "./logging.ts";
 
 const DevinMode = Schema.Literals([
   "normal",
@@ -280,6 +281,13 @@ export class DevinClient extends Context.Service<DevinClient, {
       const baseUrl = `https://api.devin.ai/v3/organizations/${
         encodeURIComponent(config.devinOrganizationId)
       }`;
+      const observeClient = (operation: string) =>
+        flow(
+          observe("DevinClient", operation),
+          Effect.annotateLogs({
+            devin_organization_id: config.devinOrganizationId,
+          }),
+        );
       const client = (yield* HttpClient.HttpClient).pipe(
         HttpClient.mapRequest(flow(
           HttpClientRequest.prependUrl(baseUrl),
@@ -287,6 +295,14 @@ export class DevinClient extends Context.Service<DevinClient, {
           HttpClientRequest.acceptJson,
         )),
         HttpClient.filterStatusOk,
+        HttpClient.tap((response) =>
+          Effect.logDebug("devin.http_response").pipe(
+            Effect.annotateLogs({
+              http_status: response.status,
+              http_method: response.request.method,
+            }),
+          )
+        ),
       );
 
       const createPlaybook = Effect.fn("DevinClient.createPlaybook")(
@@ -297,6 +313,7 @@ export class DevinClient extends Context.Service<DevinClient, {
             Effect.timeout("30 seconds"),
             Effect.mapError(submissionError),
           ),
+        observeClient("createPlaybook"),
       );
 
       const findPlaybookByMacro = Effect.fn("DevinClient.findPlaybookByMacro")(
@@ -340,6 +357,7 @@ export class DevinClient extends Context.Service<DevinClient, {
           () =>
             Effect.fail(new DevinSubmissionError({ disposition: "retryable" })),
         ),
+        observeClient("findPlaybookByMacro"),
       );
 
       const createSession = Effect.fn("DevinClient.createSession")(
@@ -350,14 +368,23 @@ export class DevinClient extends Context.Service<DevinClient, {
             Effect.timeout("30 seconds"),
             Effect.mapError(submissionError),
           ),
+        observeClient("createSession"),
+        (effect, params) =>
+          effect.pipe(
+            Effect.annotateLogs({ playbook_id: params.playbook_id }),
+          ),
       );
 
-      const getSession = Effect.fn("DevinClient.getSession")((id: string) =>
-        client.get(`/sessions/${encodeURIComponent(id)}`).pipe(
-          Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
-          Effect.map(interpretSession),
-          Effect.timeout("30 seconds"),
-        )
+      const getSession = Effect.fn("DevinClient.getSession")(
+        (id: string) =>
+          client.get(`/sessions/${encodeURIComponent(id)}`).pipe(
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
+            Effect.map(interpretSession),
+            Effect.timeout("30 seconds"),
+          ),
+        observeClient("getSession"),
+        (effect, id) =>
+          effect.pipe(Effect.annotateLogs({ devin_session_id: id })),
       );
 
       const listSessions = Effect.fn("DevinClient.listSessions")(
@@ -372,6 +399,9 @@ export class DevinClient extends Context.Service<DevinClient, {
               )
             ),
           ),
+        observeClient("listSessions"),
+        (effect, ids) =>
+          effect.pipe(Effect.annotateLogs({ session_count: ids.length })),
       );
 
       const findSessionsByTag = Effect.fn("DevinClient.findSessionsByTag")(
@@ -394,6 +424,13 @@ export class DevinClient extends Context.Service<DevinClient, {
                   HttpClientResponse.schemaBodyJson(RecoverySessionPage),
                 ),
               );
+              yield* Effect.logDebug("devin.recovery_page").pipe(
+                Effect.annotateLogs({
+                  is_archived,
+                  item_count: page.items.length,
+                  has_next_page: page.has_next_page,
+                }),
+              );
               for (const session of page.items) {
                 if (session.tags.includes(tag)) {
                   matches.set(session.session_id, session);
@@ -412,10 +449,16 @@ export class DevinClient extends Context.Service<DevinClient, {
               cursors.add(after);
             } while (true);
           }
+          yield* Effect.logDebug("devin.tag_lookup_completed").pipe(
+            Effect.annotateLogs({ match_count: matches.size }),
+          );
           return [...matches.values()];
         },
         Effect.timeout("30 seconds"),
         Effect.mapError((cause) => new DevinLookupError({ cause })),
+        observeClient("findSessionsByTag"),
+        (effect, tag) =>
+          effect.pipe(Effect.annotateLogs({ delivery_tag: tag })),
       );
 
       return DevinClient.of({

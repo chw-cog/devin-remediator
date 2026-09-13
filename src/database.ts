@@ -6,6 +6,7 @@ import { migrate } from "drizzle-orm/effect-libsql/migrator";
 import { Context, Effect, Layer, Schema } from "effect";
 import { Reactivity } from "effect/unstable/reactivity";
 import { AppConfig } from "./config.ts";
+import { causeFields, observe } from "./logging.ts";
 
 export type AppDatabase = Effect.Success<
   ReturnType<typeof Drizzle.makeWithDefaults>
@@ -48,9 +49,22 @@ export class DatabaseClient extends Context.Service<DatabaseClient, {
             new URL("../migrations", import.meta.url),
           ),
         });
-      }).pipe(Effect.mapError((cause) => new DatabaseError({ cause })));
+      }).pipe(
+        Effect.mapError((cause) => new DatabaseError({ cause })),
+        observe("DatabaseClient", "migrate"),
+      );
 
+      yield* Effect.logInfo("database.ready").pipe(Effect.annotateLogs({
+        storage: sqliteDbFilepath === ":memory:" ? "memory" : "file",
+      }));
       return DatabaseClient.of({ db });
-    }),
+    }).pipe(
+      Effect.tapCause((cause) =>
+        Effect.logError("database.initialization_failed").pipe(
+          Effect.annotateLogs(causeFields(cause)),
+        )
+      ),
+      observe("DatabaseClient", "initialize"),
+    ),
   ).pipe(Layer.provide(Reactivity.layer));
 }

@@ -1,5 +1,6 @@
-import { Effect, Schema } from "effect";
+import { Cause, Clock, Effect, Schema } from "effect";
 import { Hono } from "hono";
+import { causeFields } from "./logging.ts";
 import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 
 const decodeDelivery = Schema.decodeUnknownEffect(Schema.Struct({
@@ -16,37 +17,78 @@ export const createApp = Effect.gen(function* () {
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 
-  app.post("/api/v1/webhook", (c) =>
-    runPromise(
+  app.post("/api/v1/webhook", (c) => {
+    const requestId = crypto.randomUUID();
+    c.header("x-request-id", requestId);
+    return runPromise(
       Effect.gen(function* () {
-        const rawPayload = yield* Effect.tryPromise({
-          try: () => c.req.text(),
-          catch: () => "Invalid JSON",
-        });
+        const started = yield* Clock.currentTimeMillis;
+        const response = yield* Effect.gen(function* () {
+          const rawPayload = yield* Effect.tryPromise({
+            try: () => c.req.text(),
+            catch: () => "Invalid JSON",
+          });
 
-        const payload = yield* Effect.tryPromise({
-          try: (): Promise<unknown> => c.req.json(),
-          catch: () => "Invalid JSON",
-        });
+          const payload = yield* Effect.tryPromise({
+            try: (): Promise<unknown> => c.req.json(),
+            catch: () => "Invalid JSON",
+          });
 
-        const delivery = yield* decodeDelivery({
-          id: c.req.header("x-github-delivery"),
-          name: c.req.header("x-github-event"),
-          payload,
-          signature: c.req.header("x-hub-signature-256"),
-        }).pipe(Effect.mapError(() => "Invalid webhook headers or payload"));
+          const delivery = yield* decodeDelivery({
+            id: c.req.header("x-github-delivery"),
+            name: c.req.header("x-github-event"),
+            payload,
+            signature: c.req.header("x-hub-signature-256"),
+          }).pipe(Effect.mapError(() => "Invalid webhook headers or payload"));
 
-        yield* handler.receive({ ...delivery, payload: rawPayload });
+          yield* handler.receive({ ...delivery, payload: rawPayload });
 
-        return c.body(null, 200);
+          return c.body(null, 200);
+        }).pipe(
+          Effect.catchTag(
+            "WebhookDeliveryHandlerError",
+            () =>
+              Effect.succeed(c.json({ error: "Webhook handling failed" }, 500)),
+          ),
+          Effect.catch((error) => Effect.succeed(c.json({ error }, 400))),
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.gen(function* () {
+                yield* Effect.logError("webhook.unexpected_failure").pipe(
+                  Effect.annotateLogs(causeFields(cause)),
+                );
+                return c.json({ error: "Webhook handling failed" }, 500);
+              })
+          ),
+        );
+        yield* Effect.logWithLevel(
+          response.status >= 500
+            ? "Error"
+            : response.status >= 400
+            ? "Warn"
+            : "Info",
+        )(
+          "http.request.completed",
+        ).pipe(Effect.annotateLogs({
+          http_status: response.status,
+          duration_ms: (yield* Clock.currentTimeMillis) - started,
+        }));
+        return response;
       }).pipe(
-        Effect.catchTag("WebhookDeliveryHandlerError", () =>
-          Effect.succeed(c.json({ error: "Webhook handling failed" }, 500))),
-        Effect.catch((error) =>
-          Effect.succeed(c.json({ error }, 400))
-        ),
+        Effect.annotateLogs({
+          component: "App",
+          operation: "receiveWebhook",
+          request_id: requestId,
+          github_delivery_id: c.req.header("x-github-delivery")?.slice(0, 200),
+          github_event: c.req.header("x-github-event")?.slice(0, 100),
+          http_method: "POST",
+          http_route: "/api/v1/webhook",
+        }),
+        Effect.withSpan("App.receiveWebhook"),
       ),
-    ));
+    );
+  });
 
   return app;
 });

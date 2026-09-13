@@ -5,6 +5,7 @@ import {
   DevinSubmissionError,
 } from "./devin.ts";
 import type { DeliveryRecord } from "./devin-session-repository.ts";
+import { observe } from "./logging.ts";
 
 export type WebhookEventOutcome =
   | { readonly _tag: "Skipped" }
@@ -54,8 +55,18 @@ export class WebhookEventProcessors extends Context.Service<
           const existing = yield* client.findPlaybookByMacro(
             issuePlaybook.macro,
           );
-          if (existing) return existing;
+          if (existing) {
+            yield* Effect.logDebug("playbook.reused").pipe(
+              Effect.annotateLogs({ playbook_id: existing.playbook_id }),
+            );
+            return existing;
+          }
           return yield* client.createPlaybook(issuePlaybook).pipe(
+            Effect.tap((playbook) =>
+              Effect.logInfo("playbook.created").pipe(
+                Effect.annotateLogs({ playbook_id: playbook.playbook_id }),
+              )
+            ),
             Effect.catch((error) =>
               error.httpStatus === 409
                 ? client.findPlaybookByMacro(issuePlaybook.macro).pipe(
@@ -80,19 +91,30 @@ export class WebhookEventProcessors extends Context.Service<
               : { httpStatus: error.httpStatus }),
           })
         ),
+        observe("WebhookEventProcessors", "ensureIssuePlaybook"),
       );
 
       const issuesProcessor: WebhookEventProcessor = Effect.fn(
         "issuesProcessor",
       )(
-        function* (delivery, client) {
+        function* (
+          delivery: DeliveryRecord,
+          client: DevinClient["Service"],
+        ): Effect.fn.Return<WebhookEventOutcome, DevinSubmissionError> {
           const matched = yield* decodeDevinLabel(delivery.payload).pipe(
             Effect.result,
           );
-          if (matched._tag === "Failure") return { _tag: "Skipped" };
+          if (matched._tag === "Failure") {
+            yield* Effect.logDebug("webhook.filter_not_matched").pipe(
+              Effect.annotateLogs({ reason: "requires_issues_labeled_devin" }),
+            );
+            return { _tag: "Skipped" };
+          }
 
           const playbook = yield* ensureIssuePlaybook(client);
-          yield* Effect.logInfo("submitting session to Devin");
+          yield* Effect.logInfo("session.submission_started").pipe(
+            Effect.annotateLogs({ playbook_id: playbook.playbook_id }),
+          );
           const session = yield* client.createSession({
             playbook_id: playbook.playbook_id,
             title: `GitHub ${delivery.eventName}: ${delivery.repo}`,
@@ -114,6 +136,14 @@ export class WebhookEventProcessors extends Context.Service<
           });
           return { _tag: "SessionCreated", devinSessionId: session.session_id };
         },
+        observe("WebhookEventProcessors", "issuesProcessor"),
+        (effect, delivery) =>
+          effect.pipe(Effect.annotateLogs({
+            github_delivery_id: delivery.deliveryId,
+            github_event: delivery.eventName,
+            repo: delivery.repo,
+            issue_number: delivery.issueNumber,
+          })),
       );
       return new Map([["issues", issuesProcessor]]);
     }),
