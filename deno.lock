@@ -1,0 +1,21 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:effect@4.0.0-rc.115": "4.0.0-rc.115",
+    "npm:hono@4.13.7": "4.13.7"
+  },
+  "npm": {
+    "effect@4.0.0-rc.115": {
+      "integrity": "sha512-ogYulZ5ffeOzrJqQrG0XOkDO5lKn2s9KNHhoxJy/6wKUkF0i12dlVXWA9TgsgQ+zV/JzizyG0+XMPepZEQX6vw=="
+    },
+    "hono@4.13.7": {
+      "integrity": "sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:effect@4.0.0-rc.115",
+      "npm:hono@4.13.7"
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "effect": "npm:effect@4.0.0-rc.115",
+    "hono": "npm:hono@4.13.7"
+  }
+}
