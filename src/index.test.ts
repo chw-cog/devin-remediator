@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { githubAppEnv } from "../test/fixtures/github-app.ts";
 import { createHmac } from "node:crypto";
 import { ConfigProvider, Effect, Fiber, Layer, Result } from "effect";
 import { createApp } from "./app.ts";
@@ -384,6 +385,7 @@ Deno.test("production environment forwarding honors retained polling and analysi
       DEVIN_API_KEY: "test",
       DEVIN_ORGANIZATION_ID: "org",
       GITHUB_WEBHOOK_SECRET: "test",
+      ...githubAppEnv,
       DEVIN_RETAINED_POLL_INTERVAL_MS: "12345",
       DEVIN_ANALYSIS_MAX_ATTEMPTS: "7",
     } as Record<string, string>)[name]
@@ -393,6 +395,8 @@ Deno.test("production environment forwarding honors retained polling and analysi
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
     ),
   );
+  assert.equal(config.githubApp?.appId, 101);
+  assert.equal(config.githubApp?.installationId, 202);
   assert.equal(config.devinRetainedPollIntervalMs, 12345);
   assert.equal(config.devinAnalysisMaxAttempts, 7);
   for (const entry of ["start", "dev"]) {
@@ -401,5 +405,23 @@ Deno.test("production environment forwarding honors retained polling and analysi
     ).tasks;
     assert.ok(tasks[entry].includes("DEVIN_RETAINED_POLL_INTERVAL_MS"));
     assert.ok(tasks[entry].includes("DEVIN_ANALYSIS_MAX_ATTEMPTS"));
+    const allowed = new Set(
+      tasks[entry].match(/--allow-env=([^ ]+)/)[1].split(","),
+    );
+    for (const name of Object.keys(githubAppEnv)) assert.ok(allowed.has(name));
+    assert.equal(allowed.has("GITHUB_TOKEN"), false);
   }
+  const docker = await Deno.readTextFile(
+    new URL("../Dockerfile", import.meta.url),
+  );
+  const args: string[] = JSON.parse(
+    docker.split("\n").find((line) => line.startsWith("CMD "))!.slice(4),
+  );
+  const allowed = new Set(
+    args.find((arg) => arg.startsWith("--allow-env="))!.slice(
+      "--allow-env=".length,
+    ).split(","),
+  );
+  for (const name of Object.keys(githubAppEnv)) assert.ok(allowed.has(name));
+  assert.equal(allowed.has("GITHUB_TOKEN"), false);
 });

@@ -4,8 +4,8 @@
     "exclude": [".agents/", ".pi/"]
   },
   "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV --watch src/index.ts",
-    "start": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV src/index.ts",
+    "dev": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,GITHUB_APP_ID,GITHUB_APP_INSTALLATION_ID,GITHUB_APP_PRIVATE_KEY,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV --watch src/index.ts",
+    "start": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,GITHUB_APP_ID,GITHUB_APP_INSTALLATION_ID,GITHUB_APP_PRIVATE_KEY,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV src/index.ts",
     "check": "deno fmt --check && deno lint && deno check src/*.ts drizzle.config.ts && deno check test/lifecycle-observation-worker.ts",
     "test": "deno test --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-net=127.0.0.1 --allow-env=LIBSQL_JS_DEV",
     "db:generate": "deno run -A npm:drizzle-kit@1.0.0-rc.5-5935859 generate"
@@ -14,6 +14,8 @@
     "@effect/platform-deno": "npm:@effect/platform-deno@4.0.0-rc.115",
     "@effect/sql-libsql": "npm:@effect/sql-libsql@4.0.0-rc.115",
     "@libsql/client": "npm:@libsql/client@0.18.0",
+    "@octokit/auth-app": "npm:@octokit/auth-app@8.2.0",
+    "@octokit/core": "npm:@octokit/core@7.0.6",
     "@octokit/webhooks": "npm:@octokit/webhooks@14.2.0",
     "drizzle-kit": "npm:drizzle-kit@1.0.0-rc.5-5935859",
     "drizzle-orm": "npm:drizzle-orm@1.0.0-rc.5-5935859",

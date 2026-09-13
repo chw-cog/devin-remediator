@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
-import { ConfigProvider, Effect, Result } from "effect";
+import { ConfigProvider, Effect, Redacted, Result } from "effect";
 import { AppConfig } from "./config.ts";
+import { githubAppEnv } from "../test/fixtures/github-app.ts";
 
 const env = {
   DEVIN_API_KEY: "cog_test-key",
@@ -28,8 +29,45 @@ Deno.test("AppConfig loads settings from the supplied config layer", async () =>
       devinOrchestratorIntervalMs: 3000,
       devinSubmittingTimeoutSeconds: 60,
       githubWebhookSecret: `${key}-webhook-secret`,
+      githubApp: null,
       sqliteDbFilepath: `./${key}.sqlite`,
     });
+  }
+});
+
+Deno.test("GitHub App config is optional, rejects partial or invalid credentials, and redacts its key", async () => {
+  const load = (settings: Record<string, string | undefined>) =>
+    Effect.runPromise(
+      AppConfig.pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({ ...env, ...settings }),
+          ),
+        ),
+      ),
+    );
+  assert.equal((await load({})).githubApp, null);
+  assert.equal(
+    (await load({
+      GITHUB_APP_ID: "",
+      GITHUB_APP_INSTALLATION_ID: "",
+      GITHUB_APP_PRIVATE_KEY: "",
+    })).githubApp,
+    null,
+  );
+  const config = await load(githubAppEnv);
+  assert.ok(config.githubApp);
+  assert.equal(config.githubApp.appId, 101);
+  assert.equal(config.githubApp.installationId, 202);
+  assert.equal(
+    Redacted.value(config.githubApp.privateKey),
+    githubAppEnv.GITHUB_APP_PRIVATE_KEY,
+  );
+  assert.ok(!JSON.stringify(config).includes("BEGIN PRIVATE KEY"));
+  for (const name of Object.keys(githubAppEnv)) {
+    for (const value of [undefined, "", "invalid", "0", "-1", "1.5"]) {
+      await assert.rejects(load({ ...githubAppEnv, [name]: value }));
+    }
   }
 });
 

@@ -1737,6 +1737,7 @@ orchestrationTest(
         Effect.provide(Layer.fresh(DevinSessionOrchestrator.layer)),
         Effect.provide(WebhookEventProcessors.layer),
         Effect.provideService(DevinSessionRepository, repo),
+        Effect.provideService(DatabaseClient, { db }),
         Effect.provideService(DevinClient, fake.client),
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
           DEVIN_API_KEY: "test",
@@ -2694,7 +2695,7 @@ orchestrationTest(
         ["active", "completed", "active", "closed"],
       );
       assert.equal(transitions.at(-1)?.annotations.is_archived, true);
-      assert.equal(transitions.at(-1)?.annotations.provider_status, "resuming");
+      assert.equal(transitions.at(-1)?.annotations.provider_status, undefined);
       assert.equal((yield* row(db, "transitions")).providerLifecycle, "closed");
       assert.equal(fake.creates.length, 0);
       assert.equal(fake.insights.length, 0);

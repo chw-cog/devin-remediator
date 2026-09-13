@@ -30,7 +30,12 @@ import {
   normalizedRemediationOutput,
   type RemediationOutput,
 } from "./remediation-output.ts";
-import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
+import {
+  attentionNotifications,
+  devinSessions,
+  githubWebhookDeliveries,
+} from "./schemas.ts";
+import type { AppDatabase } from "./database.ts";
 
 export type SessionRecord = typeof devinSessions.$inferSelect;
 export type DeliveryRecord = typeof githubWebhookDeliveries.$inferSelect;
@@ -343,6 +348,63 @@ export class DevinSessionRepository extends Context.Service<
         };
       };
 
+      const recordAttention = Effect.fnUntraced(function* (
+        tx: Parameters<Parameters<AppDatabase["transaction"]>[0]>[0],
+        before: SessionRecord,
+        after: SessionRecord,
+        delivery: DeliveryRecord,
+        now: DateTime.Utc,
+      ) {
+        if (before.providerLifecycle === after.providerLifecycle) {
+          if (
+            before.sessionUrl === after.sessionUrl &&
+            before.devinSessionId === after.devinSessionId
+          ) return;
+          yield* tx.update(attentionNotifications).set({
+            sessionUrl: after.sessionUrl,
+            remoteId: after.devinSessionId,
+            body: null,
+            status: "pending",
+            dueAt: DateTime.toEpochMillis(now),
+            lastFailure: null,
+          }).where(and(
+            eq(attentionNotifications.sessionRecordId, after.id),
+            isNull(attentionNotifications.closedAt),
+            isNull(attentionNotifications.possibleSendAt),
+            inArray(attentionNotifications.status, ["pending", "blocked"]),
+          ));
+          return;
+        }
+        yield* tx.update(attentionNotifications).set({
+          closedAt: DateTime.toEpochMillis(now),
+          status:
+            sql`CASE WHEN ${attentionNotifications.possibleSendAt} IS NULL AND ${attentionNotifications.status} IN ('pending', 'blocked') THEN 'cancelled' ELSE ${attentionNotifications.status} END`,
+        }).where(and(
+          eq(attentionNotifications.sessionRecordId, after.id),
+          isNull(attentionNotifications.closedAt),
+        ));
+        const reason = after.providerLifecycle;
+        if (reason !== "needs_input" && reason !== "needs_approval") return;
+        const [latest] = yield* tx.select({
+          sequence: sql<
+            number
+          >`coalesce(max(${attentionNotifications.sequence}), 0)`,
+        })
+          .from(attentionNotifications).where(
+            eq(attentionNotifications.sessionRecordId, after.id),
+          );
+        yield* tx.insert(attentionNotifications).values({
+          id: crypto.randomUUID(),
+          sessionRecordId: after.id,
+          sequence: latest.sequence + 1,
+          reason,
+          repo: delivery.repo,
+          issueNumber: delivery.issueNumber,
+          remoteId: after.devinSessionId,
+          sessionUrl: after.sessionUrl,
+        });
+      });
+
       const logObservation = (
         before: SessionRecord,
         after: SessionRecord,
@@ -357,10 +419,7 @@ export class DevinSessionRepository extends Context.Service<
             Effect.annotateLogs({
               previous_lifecycle: before.providerLifecycle,
               provider_lifecycle: after.providerLifecycle,
-              provider_status: after.providerStatus,
-              provider_status_detail: after.providerStatusDetail,
               is_archived: after.isArchived,
-              session_url: after.sessionUrl,
               continuation_window_elapsed: continuationWindowElapsed(
                 after.providerCreatedAt,
                 DateTime.toEpochMillis(now),
@@ -480,6 +539,7 @@ export class DevinSessionRepository extends Context.Service<
                     observationUpdate(saved, observation, delivery.repo, now),
                   )
                   .where(eq(devinSessions.id, saved.id)).returning();
+                yield* recordAttention(tx, saved, observed, delivery, now);
                 yield* logObservation(saved, observed, now);
               }
               return true;
@@ -596,6 +656,7 @@ export class DevinSessionRepository extends Context.Service<
                 )
                 .where(ownsObservation(claim, now)).returning();
               if (!saved) return false;
+              yield* recordAttention(tx, current, saved, claim.delivery, now);
               yield* logObservation(current, saved, now);
               return true;
             })

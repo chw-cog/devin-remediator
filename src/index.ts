@@ -52,6 +52,9 @@ export const applicationEnvironment = (
     "DEVIN_ORCHESTRATOR_INTERVAL_MS",
     "DEVIN_SUBMITTING_TIMEOUT_SECONDS",
     "GITHUB_WEBHOOK_SECRET",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_INSTALLATION_ID",
+    "GITHUB_APP_PRIVATE_KEY",
     "SQLITE_DB_FILEPATH",
   ].map((name) => [name, get(name)]));
 

@@ -6,6 +6,7 @@ import {
   primaryKey,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import type { RemediationOutput } from "./remediation-output.ts";
 import type { ProviderLifecycle, SessionAnalysis } from "./devin.ts";
@@ -103,3 +104,80 @@ export const devinSessions = sqliteTable("devin_sessions", {
     sql`CASE WHEN json_valid(${table.outputs}) THEN json_type(${table.outputs}) = 'array' ELSE 0 END`,
   ),
 ]);
+
+export const attentionNotifications = sqliteTable("attention_notifications", {
+  id: text("id").primaryKey().notNull(),
+  sessionRecordId: text("session_record_id").notNull().references(() =>
+    devinSessions.id
+  ),
+  sequence: integer("sequence").notNull(),
+  reason: text("reason", { enum: ["needs_input", "needs_approval"] }).notNull(),
+  repo: text("repo").notNull(),
+  issueNumber: integer("issue_number"),
+  remoteId: text("remote_id"),
+  sessionUrl: text("session_url"),
+  closedAt: integer("closed_at"),
+  status: text("status", {
+    enum: ["pending", "delivered", "cancelled", "blocked"],
+  }).notNull().default("pending"),
+  dueAt: integer("due_at").notNull().default(0),
+  version: integer("version").notNull().default(0),
+  leaseUntil: integer("lease_until").notNull().default(0),
+  attempts: integer("attempts").notNull().default(0),
+  body: text("body"),
+  expectedAppId: integer("expected_app_id"),
+  expectedInstallationId: integer("expected_installation_id"),
+  possibleSendAt: integer("possible_send_at"),
+  scanPage: integer("scan_page").notNull().default(1),
+  scanMatches: integer("scan_matches").notNull().default(0),
+  scanUnverified: integer("scan_unverified", { mode: "boolean" }).notNull()
+    .default(false),
+  commentId: integer("comment_id"),
+  negativeScans: integer("negative_scans").notNull().default(0),
+  lastFailure: text("last_failure", {
+    enum: [
+      "invalid_target",
+      "unsafe_link",
+      "http",
+      "unavailable",
+      "duplicates",
+      "ownership_changed",
+      "unverified_attribution",
+      "inaccessible",
+    ],
+  }),
+}, (table) => [
+  uniqueIndex("attention_episode_idx").on(
+    table.sessionRecordId,
+    table.sequence,
+  ),
+  index("attention_due_idx").on(table.status, table.dueAt),
+  check(
+    "attention_reason_check",
+    sql`${table.reason} IN ('needs_input', 'needs_approval')`,
+  ),
+  check(
+    "attention_status_check",
+    sql`${table.status} IN ('pending', 'delivered', 'cancelled', 'blocked')`,
+  ),
+  check(
+    "attention_flight_check",
+    sql`${table.possibleSendAt} IS NULL OR (${table.body} IS NOT NULL AND ${table.expectedAppId} IS NOT NULL AND ${table.expectedAppId} > 0 AND ${table.expectedInstallationId} IS NOT NULL AND ${table.expectedInstallationId} > 0)`,
+  ),
+  check(
+    "attention_receipt_check",
+    sql`${table.status} != 'delivered' OR (${table.commentId} IS NOT NULL AND ${table.commentId} > 0)`,
+  ),
+  check(
+    "attention_counters_check",
+    sql`${table.sequence} > 0 AND ${table.version} >= 0 AND ${table.attempts} >= 0 AND ${table.scanPage} > 0 AND ${table.scanMatches} >= 0 AND ${table.negativeScans} BETWEEN 0 AND 2`,
+  ),
+]);
+
+export const githubNotificationGate = sqliteTable("github_notification_gate", {
+  id: integer("id").primaryKey().default(1),
+  version: integer("version").notNull().default(0),
+  leaseUntil: integer("lease_until").notNull().default(0),
+  nextRequestAt: integer("next_request_at").notNull().default(0),
+  nextReportAt: integer("next_report_at").notNull().default(0),
+}, (table) => [check("github_notification_singleton", sql`${table.id} = 1`)]);

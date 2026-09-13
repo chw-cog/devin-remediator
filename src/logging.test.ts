@@ -228,7 +228,8 @@ Deno.test("JSON logs correlate concurrent requests through queue, processor, cli
       );
       assert.equal(finished.annotations.devin_session_id, "remote-42");
       assert.equal(finished.annotations.provider_lifecycle, "completed");
-      assert.equal(finished.annotations.provider_status_detail, "finished");
+      assert.equal(finished.annotations.provider_status_detail, undefined);
+      assert.equal(finished.annotations.session_url, undefined);
       assert.notEqual(
         finished.annotations.tick_id,
         created.annotations.tick_id,

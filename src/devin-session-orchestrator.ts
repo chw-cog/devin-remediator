@@ -1,5 +1,6 @@
 import { Cause, Context, Effect, Layer, Schedule, Semaphore } from "effect";
 import { AppConfig } from "./config.ts";
+import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import { type DatabaseError } from "./database.ts";
 import { causeFields, errorFields, observe } from "./logging.ts";
 import { DevinClient, interpretSession } from "./devin.ts";
@@ -42,6 +43,7 @@ export class DevinSessionOrchestrator extends Context.Service<
       const processors = yield* WebhookEventProcessors;
       const config = yield* AppConfig;
       const ticks = yield* Semaphore.make(1);
+      const notifications = yield* GitHubCommentNotifier;
 
       const recover = Effect.fn("DevinSessionOrchestrator.recover")(
         function* (work: SessionWork) {
@@ -100,7 +102,7 @@ export class DevinSessionOrchestrator extends Context.Service<
           yield* Effect.logInfo("Devin session recovered by delivery tag").pipe(
             Effect.annotateLogs({
               devin_session_id: remote.session_id,
-              remote_status: remote.status,
+              provider_lifecycle: interpretSession(remote).status,
             }),
           );
         },
@@ -313,6 +315,7 @@ export class DevinSessionOrchestrator extends Context.Service<
       );
 
       const tick = Effect.gen(function* () {
+        yield* notifications.tick;
         let after:
           | Pick<ObservationClaim["session"], "insertedAt" | "id">
           | undefined;
@@ -374,5 +377,5 @@ export class DevinSessionOrchestrator extends Context.Service<
       );
       return DevinSessionOrchestrator.of({ tick, run });
     }),
-  );
+  ).pipe(Layer.provide(GitHubCommentNotifier.layer));
 }

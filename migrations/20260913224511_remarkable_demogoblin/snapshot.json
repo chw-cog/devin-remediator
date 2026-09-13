@@ -1,0 +1,924 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "2dedaa49-8abb-4db2-9876-bfe6e2e87915",
+  "prevIds": [
+    "343276ac-ab12-4e0a-bb86-e6802cd6b5a9"
+  ],
+  "ddl": [
+    {
+      "name": "attention_notifications",
+      "entityType": "tables"
+    },
+    {
+      "name": "devin_sessions",
+      "entityType": "tables"
+    },
+    {
+      "name": "github_notification_gate",
+      "entityType": "tables"
+    },
+    {
+      "name": "github_webhook_deliveries",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_record_id",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "sequence",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "reason",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "repo",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "issue_number",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "remote_id",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_url",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "closed_at",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'pending'",
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "due_at",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "version",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "lease_until",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "attempts",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "body",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expected_app_id",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expected_installation_id",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "possible_send_at",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "1",
+      "generated": null,
+      "name": "scan_page",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "scan_matches",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "scan_unverified",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "comment_id",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "negative_scans",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "last_failure",
+      "entityType": "columns",
+      "table": "attention_notifications"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "github_delivery_id",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "provider_status",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "provider_status_detail",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "provider_lifecycle",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "active_work",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "is_archived",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "provider_created_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "provider_updated_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_url",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "last_observed_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'1970-01-01T00:00:00.000Z'",
+      "generated": null,
+      "name": "next_observation_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "observation_version",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "observation_lease_until",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "completion_observed_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'[]'",
+      "generated": null,
+      "name": "outputs",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "analysis",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'pending'",
+      "generated": null,
+      "name": "analysis_status",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "analysis_attempts",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'1970-01-01T00:00:00.000Z'",
+      "generated": null,
+      "name": "analysis_next_attempt_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "analysis_reason",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "devin_session_id",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "pr_number",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "attempts",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "claim_version",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "recovery_empty_checks",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "recovery_blocked",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "inserted_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": "1",
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "github_notification_gate"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "version",
+      "entityType": "columns",
+      "table": "github_notification_gate"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "lease_until",
+      "entityType": "columns",
+      "table": "github_notification_gate"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "next_request_at",
+      "entityType": "columns",
+      "table": "github_notification_gate"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "next_report_at",
+      "entityType": "columns",
+      "table": "github_notification_gate"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_id",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_name",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "repo",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "issue_number",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "inserted_at",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "columns": [
+        "session_record_id"
+      ],
+      "tableTo": "devin_sessions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_attention_notifications_session_record_id_devin_sessions_id_fk",
+      "entityType": "fks",
+      "table": "attention_notifications"
+    },
+    {
+      "columns": [
+        "github_delivery_id"
+      ],
+      "tableTo": "github_webhook_deliveries",
+      "columnsTo": [
+        "delivery_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_devin_sessions_github_delivery_id_github_webhook_deliveries_delivery_id_fk",
+      "entityType": "fks",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "devin_sessions_pk",
+      "entityType": "pks",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "github_webhook_deliveries_pk",
+      "entityType": "pks",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "attention_notifications_pk",
+      "table": "attention_notifications",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "github_notification_gate_pk",
+      "table": "github_notification_gate",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_record_id",
+          "isExpression": false
+        },
+        {
+          "value": "sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "attention_episode_idx",
+      "entityType": "indexes",
+      "table": "attention_notifications"
+    },
+    {
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false
+        },
+        {
+          "value": "due_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "attention_due_idx",
+      "entityType": "indexes",
+      "table": "attention_notifications"
+    },
+    {
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false
+        },
+        {
+          "value": "next_observation_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "devin_sessions_observation_due_idx",
+      "entityType": "indexes",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        {
+          "value": "analysis_status",
+          "isExpression": false
+        },
+        {
+          "value": "analysis_next_attempt_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "devin_sessions_analysis_due_idx",
+      "entityType": "indexes",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "github_delivery_id"
+      ],
+      "nameExplicit": false,
+      "name": "devin_sessions_github_delivery_id_unique",
+      "entityType": "uniques",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "devin_session_id"
+      ],
+      "nameExplicit": false,
+      "name": "devin_sessions_devin_session_id_unique",
+      "entityType": "uniques",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "delivery_id"
+      ],
+      "nameExplicit": false,
+      "name": "github_webhook_deliveries_delivery_id_unique",
+      "entityType": "uniques",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "value": "\"reason\" IN ('needs_input', 'needs_approval')",
+      "name": "attention_reason_check",
+      "entityType": "checks",
+      "table": "attention_notifications"
+    },
+    {
+      "value": "\"status\" IN ('pending', 'delivered', 'cancelled', 'blocked')",
+      "name": "attention_status_check",
+      "entityType": "checks",
+      "table": "attention_notifications"
+    },
+    {
+      "value": "\"possible_send_at\" IS NULL OR (\"body\" IS NOT NULL AND \"expected_app_id\" IS NOT NULL AND \"expected_app_id\" > 0 AND \"expected_installation_id\" IS NOT NULL AND \"expected_installation_id\" > 0)",
+      "name": "attention_flight_check",
+      "entityType": "checks",
+      "table": "attention_notifications"
+    },
+    {
+      "value": "\"status\" != 'delivered' OR (\"comment_id\" IS NOT NULL AND \"comment_id\" > 0)",
+      "name": "attention_receipt_check",
+      "entityType": "checks",
+      "table": "attention_notifications"
+    },
+    {
+      "value": "\"sequence\" > 0 AND \"version\" >= 0 AND \"attempts\" >= 0 AND \"scan_page\" > 0 AND \"scan_matches\" >= 0 AND \"negative_scans\" BETWEEN 0 AND 2",
+      "name": "attention_counters_check",
+      "entityType": "checks",
+      "table": "attention_notifications"
+    },
+    {
+      "value": "\"status\" IN ('pending', 'submitting', 'submitted', 'failed', 'skipped')",
+      "name": "devin_sessions_status_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "\"provider_lifecycle\" IS NULL OR \"provider_lifecycle\" IN ('active', 'needs_input', 'needs_approval', 'paused', 'needs_intervention', 'completed', 'closed')",
+      "name": "devin_sessions_provider_lifecycle_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "\"attempts\" >= 0",
+      "name": "devin_sessions_attempts_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "\"analysis_attempts\" >= 0",
+      "name": "devin_sessions_analysis_attempts_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "(\"analysis_status\" = 'collected' AND \"analysis\" IS NOT NULL AND CASE WHEN json_valid(\"analysis\") THEN json_type(\"analysis\") = 'object' ELSE 0 END) OR (\"analysis_status\" IN ('pending', 'unavailable') AND \"analysis\" IS NULL)",
+      "name": "devin_sessions_analysis_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "CASE WHEN json_valid(\"outputs\") THEN json_type(\"outputs\") = 'array' ELSE 0 END",
+      "name": "devin_sessions_outputs_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "\"id\" = 1",
+      "name": "github_notification_singleton",
+      "entityType": "checks",
+      "table": "github_notification_gate"
+    }
+  ],
+  "renames": []
+}

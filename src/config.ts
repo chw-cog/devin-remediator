@@ -1,4 +1,40 @@
-import { Config, Schema } from "effect";
+import { createPrivateKey } from "node:crypto";
+import { Config, Effect, Redacted, Schema } from "effect";
+
+const appId = Schema.Int.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+);
+const githubApp = Config.all({
+  appId: Config.schema(appId, "GITHUB_APP_ID").pipe(Config.withDefault(0)),
+  installationId: Config.schema(appId, "GITHUB_APP_INSTALLATION_ID").pipe(
+    Config.withDefault(0),
+  ),
+  privateKey: Config.Redacted("GITHUB_APP_PRIVATE_KEY").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+}).pipe(Config.mapEffect((app) => {
+  if (
+    app.appId === 0 && app.installationId === 0 &&
+    Redacted.value(app.privateKey).trim() === ""
+  ) return Effect.succeed(null);
+  let validKey = false;
+  try {
+    validKey =
+      createPrivateKey(Redacted.value(app.privateKey)).asymmetricKeyType ===
+        "rsa";
+  } catch { /* Invalid keys are reported without their contents. */ }
+  return Schema.decodeUnknownEffect(
+    Schema.Struct({
+      appId,
+      installationId: appId,
+      validKey: Schema.Literal(true),
+    }),
+  )({ appId: app.appId, installationId: app.installationId, validKey }).pipe(
+    Effect.as(app),
+    Effect.mapError((cause) => new Config.ConfigError(cause)),
+  );
+}));
 
 export type Env = Record<string, string | undefined>;
 
@@ -26,6 +62,7 @@ export const AppConfig = Config.all({
     60,
   ),
   githubWebhookSecret: Config.String("GITHUB_WEBHOOK_SECRET"),
+  githubApp,
   sqliteDbFilepath: Config.String("SQLITE_DB_FILEPATH").pipe(
     Config.withDefault("./devin-remediator.sqlite"),
   ),

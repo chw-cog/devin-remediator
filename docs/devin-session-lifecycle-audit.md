@@ -3,6 +3,10 @@
 Reviewed on 2026-09-13 UTC against `main` at
 `92914d48ad8afa4497dda6a364642ef5261322cb`.
 
+**Implementation addendum.** Finding 2 now records the implemented GitHub App
+notification flow and its local verification. Other findings, tables, and the
+original verification section remain historical audit evidence.
+
 ## Summary
 
 Our application manages a **one-shot remediation job**, not the full lifecycle
@@ -93,29 +97,73 @@ remediation outcome. Treat recoverable suspension as paused or needing
 intervention. Do not automatically wake every suspension: user-requested pauses,
 budget limits, archive state, and expiration require different policies.
 
-### 2. High — Input and approval waits are invisible to job management
+### 2. Implemented. Input and approval waits have durable issue notifications
 
-**Confirmed operational gap.** Both waiting states collapse into `running`
-(`src/devin.ts:179–186`). Reconciliation returns without saving the reason,
-intermediate structured output, or current PR references
-(`src/devin-session-orchestrator.ts:143–159`). The database requires `output` to
-be null for nonterminal jobs (`src/schemas.ts:78–81`).
+The original finding described the earlier implementation. Current lifecycle
+interpretation distinguishes `needs_input` from `needs_approval`. Accepted
+observations preserve progress, PR references, and the session URL, release
+active-work capacity, and retain polling. Neither a wait nor structured output
+implies completion. [Get][get], [Create][create]
 
-The API explicitly describes `waiting_for_user` as needing input and
-`waiting_for_approval` as awaiting safe-mode approval. A required structured
-output is an **end-of-turn** requirement, not proof that the task is complete.
-[Get][get], [Create][create]
+`DevinSessionRepository` now saves an attention episode atomically in both
+accepted-observation paths. A forward migration backfills current waiting
+sessions without changing lifecycle, outputs, capacity, or analysis. A new
+episode represents entry into a wait, a change of wait kind, or an observed
+leave-and-reenter recurrence. Progress-only updates stay quiet.
 
-**Consequence:** a useful blocker or question can exist remotely while the
-application presents only a running job. Waiting sessions occupy the same local
-capacity as active work (`src/devin-session-repository.ts:130–145`). If they
-later sleep, finding 1 converts that wait into failure.
+`GitHubCommentNotifier` in `src/github-comment-notifier.ts` delivers the
+originating issue comment through the authenticated Octokit supplied by
+`GitHubClient` in `src/github.ts`. The client owns App authentication and its
+in-memory token cache. The notifier owns SQLite claims, rate limits, retries,
+immutable comment receipts, and recovery pagination. Token acquisition and each
+comment request consume the same one-request-per-tick budget.
 
-**Recommendation:** persist an attention reason and latest progress separately
-from final output; expose the session link and notify an operator. Define
-whether waiting jobs consume active-work capacity. Provide an authorized
-continuation path, but do not equate sending a message with granting a safe-mode
-approval.
+GitHub App authentication supersedes the initial PAT proposal. One configured
+installation uses `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and redacted
+`GITHUB_APP_PRIVATE_KEY`. All absent disables delivery visibly while retaining
+pending work. Partial or invalid credentials fail configuration. Configure
+selected-repository **Issues** read/write permission and subscribe the App
+webhook to **Issues** events. The existing `GITHUB_WEBHOOK_SECRET` remains
+separate. See
+[setup and delivery limits](../README.md#enable-issue-attention-comments-with-a-github-app).
+
+Public comments contain a generic reason, a safe session link, and distinct
+input or approval directions. They do not contain question, blocker, progress,
+or verification text. The authenticated Devin UI is the only continuation
+surface. GitHub replies are not forwarded. No public control endpoint, automated
+message, or automated approval was added.
+
+Recovery requires a matching marker attributed to the persisted App ID. App and
+installation identity cannot be reassigned on an ambiguous flight. Missing or
+foreign App attribution blocks retry unless another verified match exists. Two
+complete negative scans separated by grace precede any ambiguous repost.
+Superseded unsent episodes are cancelled, and superseded possible sends are
+reconciled without reposting.
+
+**Verified locally.** `src/github-comment-notifier.test.ts`,
+`src/github.test.ts`, and `src/attention-migration.test.ts` exercise
+synthetic-key JWT signing, mock token exchange and actual Octokit JSON requests,
+restart, pagination, stale claims, throttling, recurrence, capacity, privacy,
+and upgrade waits. Config and entrypoint tests cover optional credentials and
+production environment permissions. No live authenticated API calls were used.
+
+Review regressions cover metadata correction before the first delivery attempt
+and HTTP 403 throttling during recovery. Corrected metadata updates the existing
+unsent episode. A rate-limited lookup retains its cursor and resumes after the
+cooldown without posting another comment.
+
+The official
+[Common Flows example](https://docs.devin.ai/api-reference/common-flows) pairs
+`devin-abc123` with `https://app.devin.ai/sessions/devin-abc123`. That exact
+prefixed-ID fixture is covered. Other URL forms are blocked unless they exactly
+match the persisted remote identity and safe host/path policy.
+
+**Remaining limits.** GitHub offers no exactly-once comment key. Delayed
+visibility, edited or deleted markers, and remote request races can still
+duplicate comments. Attribution availability is mock-tested, not guaranteed by a
+live fixture. Blocked ownership, access, or attribution needs operator
+investigation. Polling cannot detect transitions entirely between observations
+or a new same-kind question without an observed lifecycle transition.
 
 ### 3. High — Missing sessions can hold capacity indefinitely
 
