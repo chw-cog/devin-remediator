@@ -57,7 +57,6 @@ Deno.test("issues processor creates a session for the exact added devin label an
         pull_requests: [],
       });
     },
-    getSession: () => Effect.die("Processor must not poll"),
     listSessions: () => Effect.die("Processor must not list sessions"),
     findSessionsByTag: () => Effect.die("Processor must not recover sessions"),
     listSessionsWithInsights: () =>
@@ -106,7 +105,6 @@ for (
       findPlaybookByMacro: () =>
         Effect.die("Skipped delivery must not look up playbooks"),
       createSession: () => Effect.die("Skipped delivery must not create"),
-      getSession: () => Effect.die("Skipped delivery must not poll"),
       listSessions: () => Effect.die("Skipped delivery must not list"),
       findSessionsByTag: () => Effect.die("Skipped delivery must not recover"),
       listSessionsWithInsights: () =>
@@ -130,7 +128,6 @@ for (const disposition of ["retryable", "permanent", "ambiguous"] as const) {
       createPlaybook: () => Effect.die("Playbook already exists"),
       findPlaybookByMacro: () => Effect.succeed(playbook),
       createSession: () => Effect.fail(error),
-      getSession: () => Effect.die("Processor must not poll"),
       listSessions: () => Effect.die("Processor must not list sessions"),
       findSessionsByTag: () =>
         Effect.die("Processor must not recover sessions"),
@@ -151,7 +148,6 @@ const unusedClient = DevinClient.of({
   createPlaybook: () => Effect.die("Unexpected playbook creation"),
   findPlaybookByMacro: () => Effect.die("Unexpected playbook lookup"),
   createSession: () => Effect.die("Unexpected session creation"),
-  getSession: () => Effect.die("Unexpected polling"),
   listSessions: () => Effect.die("Unexpected session listing"),
   findSessionsByTag: () => Effect.die("Unexpected session recovery"),
   listSessionsWithInsights: () => Effect.die("Unexpected insights lookup"),

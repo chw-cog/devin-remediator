@@ -43,7 +43,6 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
             stopped = true;
           })),
         ),
-      getSession: () => Effect.die("No running session exists"),
       listSessions: () => Effect.die("Unexpected listSessions"),
       findSessionsByTag: () => Effect.die("Unexpected tag lookup"),
       listSessionsWithInsights: () => Effect.die("Unexpected insights lookup"),
@@ -147,16 +146,21 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
           pull_requests: [],
         };
       }),
-    getSession: (id) =>
+    listSessions: (ids) =>
       Effect.sync(() => {
-        gets.push(id);
-        return {
+        gets.push(...ids);
+        return ids.map((session_id) => ({
+          session_id,
+          url: `https://app.devin.ai/sessions/${session_id}`,
           status: "running" as const,
-          output: null,
-          pullRequestUrls: [],
-        };
+          org_id: "org-test",
+          created_at: 0,
+          updated_at: 0,
+          acus_consumed: 0,
+          tags: [],
+          pull_requests: [],
+        }));
       }),
-    listSessions: () => Effect.die("Unexpected listSessions"),
     findSessionsByTag: () => Effect.die("Unexpected tag lookup"),
     listSessionsWithInsights: () => Effect.die("Unexpected insights lookup"),
     generateSessionInsights: () => Effect.die("Unexpected insights generation"),

@@ -6,6 +6,7 @@ import {
   DevinClient,
   findPullRequestNumber,
   interpretSession,
+  sessionBatchSize,
 } from "./devin.ts";
 import {
   analysisBatchSize,
@@ -126,45 +127,52 @@ export class DevinSessionOrchestrator extends Context.Service<
       );
 
       const reconcile = Effect.fn("DevinSessionOrchestrator.reconcile")(
-        function* (work: RunningSession) {
-          yield* Effect.logDebug("session.reconciliation_started");
-          const result = yield* client.getSession(work.session.devinSessionId)
-            .pipe(
-              Effect.result,
-            );
+        function* (batch: ReadonlyArray<RunningSession>) {
+          const result = yield* client.listSessions(
+            batch.map((work) => work.session.devinSessionId),
+          ).pipe(Effect.result);
           if (result._tag === "Failure") {
             yield* Effect.logWarning(
-              "Devin reconciliation unavailable; retaining running session",
+              "Devin reconciliation unavailable; retaining running sessions",
             ).pipe(Effect.annotateLogs(errorFields(result.failure)));
             return;
           }
-          const remote = result.success;
-          if (remote.status === "running") return;
-          const prNumber = findPullRequestNumber(
-            remote.pullRequestUrls,
-            work.delivery.repo,
+          const sessions = new Map(
+            result.success.map((session) => [session.session_id, session]),
           );
-          const changed = yield* repository.finish(
-            work,
-            remote,
-            prNumber,
-          );
-          if (changed) {
-            yield* Effect.logWithLevel(
-              remote.status === "failed" ? "Error" : "Info",
-            )(
-              "session.finished",
-            ).pipe(
-              Effect.annotateLogs({
-                status: remote.status,
-                outcome: remote.output.outcome,
-                pr_number: prNumber,
-              }),
-            );
-          }
+          yield* Effect.forEach(batch, (work) =>
+            Effect.gen(function* () {
+              yield* Effect.logDebug("session.reconciliation_started");
+              const session = sessions.get(work.session.devinSessionId);
+              if (!session) {
+                yield* Effect.logWarning(
+                  "Devin session missing from list response; retaining running session",
+                );
+                return;
+              }
+              const remote = interpretSession(session);
+              if (remote.status === "running") return;
+              const prNumber = findPullRequestNumber(
+                remote.pullRequestUrls,
+                work.delivery.repo,
+              );
+              const changed = yield* repository.finish(work, remote, prNumber);
+              if (changed) {
+                yield* Effect.logWithLevel(
+                  remote.status === "failed" ? "Error" : "Info",
+                )("session.finished").pipe(
+                  Effect.annotateLogs({
+                    status: remote.status,
+                    outcome: remote.output.outcome,
+                    pr_number: prNumber,
+                  }),
+                );
+              }
+            }).pipe(Effect.annotateLogs(identifiers(work))), { discard: true });
         },
         observe("DevinSessionOrchestrator", "reconcile"),
-        (effect, work) => effect.pipe(Effect.annotateLogs(identifiers(work))),
+        (effect, batch) =>
+          effect.pipe(Effect.annotateLogs({ session_count: batch.length })),
       );
 
       const submit = Effect.fn("DevinSessionOrchestrator.submit")(
@@ -333,8 +341,13 @@ export class DevinSessionOrchestrator extends Context.Service<
       );
 
       const tick = Effect.gen(function* () {
-        for (const work of yield* repository.findRunning) {
-          yield* reconcile(work);
+        const running = yield* repository.findRunning;
+        for (
+          let offset = 0;
+          offset < running.length;
+          offset += sessionBatchSize
+        ) {
+          yield* reconcile(running.slice(offset, offset + sessionBatchSize));
         }
         yield* Effect.forEach(yield* repository.claimStale, recover, {
           concurrency: config.devinMaxConcurrentSessions,

@@ -21,7 +21,6 @@ import {
   type DevinSession,
   type DevinSessionWithInsights,
   DevinSubmissionError,
-  type SessionState,
 } from "./devin.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
 import {
@@ -61,7 +60,7 @@ const completedInsights = (sessionId: string): DevinSessionWithInsights => ({
 
 function fakeClient() {
   const creates: Parameters<DevinClient["Service"]["createSession"]>[0][] = [];
-  const gets: string[] = [];
+  const lists: ReadonlyArray<string>[] = [];
   const lookups: string[] = [];
   const insights: ReadonlyArray<string>[] = [];
   const generations: string[] = [];
@@ -76,8 +75,10 @@ function fakeClient() {
         ...remote,
         session_id: `devin-created-${creates.length}`,
       }),
-    get: (_id: string): ReturnType<DevinClient["Service"]["getSession"]> =>
-      Effect.succeed({ status: "running", output: null, pullRequestUrls: [] }),
+    list: (
+      ids: ReadonlyArray<string>,
+    ): ReturnType<DevinClient["Service"]["listSessions"]> =>
+      Effect.succeed(ids.map((session_id) => ({ ...remote, session_id }))),
     lookup: (
       _tag: string,
     ): ReturnType<DevinClient["Service"]["findSessionsByTag"]> =>
@@ -99,12 +100,11 @@ function fakeClient() {
         creates.push(params);
         return behavior.create();
       }),
-    getSession: (id) =>
+    listSessions: (ids) =>
       Effect.suspend(() => {
-        gets.push(id);
-        return behavior.get(id);
+        lists.push(ids);
+        return behavior.list(ids);
       }),
-    listSessions: () => Effect.die("Orchestration must use getSession"),
     listSessionsWithInsights: (ids) =>
       Effect.suspend(() => {
         insights.push(ids);
@@ -121,7 +121,7 @@ function fakeClient() {
         return behavior.lookup(tag);
       }),
   });
-  return { creates, gets, lookups, insights, generations, behavior, client };
+  return { creates, lists, lookups, insights, generations, behavior, client };
 }
 
 function testLayer(
@@ -808,7 +808,7 @@ orchestrationTest(
       yield* orchestra.tick;
       yield* orchestra.tick;
       assert.equal(fake.creates.length, 1);
-      assert.deepEqual(fake.gets, ["devin-created", "devin-created"]);
+      assert.deepEqual(fake.lists, [["devin-created"], ["devin-created"]]);
     }),
 );
 
@@ -898,6 +898,141 @@ orchestrationTest(
 );
 
 orchestrationTest(
+  "polling batches 200 IDs, retains a failed batch, and continues with subsequent batches",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      const ids = Array.from({ length: 201 }, (_, i) => `remote-${i}`);
+      for (const id of ids) {
+        yield* seed(db, id, { status: "running", devinSessionId: id });
+      }
+      yield* seed(db, "pending");
+      let failBatch = true;
+      fake.behavior.list = (batch) =>
+        failBatch && batch.length === 200
+          ? Effect.fail(new DevinLookupError({ cause: "List unavailable" }))
+          : Effect.succeed(
+            batch.toReversed().map((session_id) => ({
+              ...remote,
+              session_id,
+              status: "exit" as const,
+              status_detail: "finished" as const,
+              structured_output: { outcome: "fixed", summary: session_id },
+            })),
+          );
+      yield* orchestra.tick;
+      assert.deepEqual(fake.lists.map((batch) => batch.length), [200, 1]);
+      assert.deepEqual(new Set(fake.lists.flat()), new Set(ids));
+      for (const id of fake.lists[0]) {
+        const saved = yield* row(db, id);
+        assert.equal(saved.status, "running");
+        assert.equal(saved.devinSessionId, id);
+        assert.equal(saved.output, null);
+      }
+      const completed = fake.lists[1][0];
+      assert.equal((yield* row(db, completed)).status, "succeeded");
+      assert.deepEqual((yield* row(db, completed)).output, {
+        outcome: "fixed",
+        summary: completed,
+      });
+      assert.equal((yield* row(db, "pending")).status, "running");
+      assert.equal(fake.creates.length, 1);
+      failBatch = false;
+      yield* orchestra.tick;
+      for (const id of ids) {
+        const saved = yield* row(db, id);
+        assert.equal(saved.status, "succeeded");
+        assert.deepEqual(saved.output, { outcome: "fixed", summary: id });
+      }
+    }),
+  { DEVIN_MAX_CONCURRENT_SESSIONS: "201" },
+);
+
+Deno.test("polling reconciles paginated list responses through the real client without detail requests", () => {
+  const requests: (string | null)[] = [];
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const url = new URL(String(input));
+    assert.equal(url.pathname, "/v3/organizations/org-test/sessions");
+    assert.equal(init?.method, "GET");
+    assert.equal(
+      new Headers(init.headers).get("authorization"),
+      "Bearer test-key",
+    );
+    assert.equal(url.searchParams.get("first"), "200");
+    assert.deepEqual(
+      new Set(url.searchParams.getAll("session_ids")),
+      new Set(["done", "running", "missing"]),
+    );
+    const after = url.searchParams.get("after");
+    requests.push(after);
+    return Promise.resolve(Response.json(
+      after === null
+        ? {
+          items: [{ ...remote, session_id: "running", status: "running" }],
+          has_next_page: true,
+          end_cursor: "page-2",
+        }
+        : {
+          items: [{
+            ...remote,
+            session_id: "done",
+            status: "exit",
+            status_detail: "finished",
+            structured_output: { outcome: "fixed", summary: "Verified fix." },
+            pull_requests: [{
+              pr_url: "https://github.com/owner/repo/pull/42",
+              pr_state: "open",
+            }],
+          }],
+          has_next_page: false,
+          end_cursor: null,
+        },
+    ));
+  };
+  const layer = DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(WebhookEventProcessors.layer),
+    Layer.provideMerge(DevinSessionRepository.layer),
+    Layer.provideMerge(DatabaseClient.layer),
+    Layer.provide(DevinClient.layer),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+      DEVIN_API_KEY: "test-key",
+      DEVIN_ORGANIZATION_ID: "org-test",
+      GITHUB_WEBHOOK_SECRET: "test-secret",
+      SQLITE_DB_FILEPATH: ":memory:",
+    }))),
+  );
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseClient;
+      const orchestra = yield* DevinSessionOrchestrator;
+      for (const id of ["done", "running", "missing"]) {
+        yield* seed(db, id, {
+          status: "running",
+          devinSessionId: id,
+          analysisNextAttemptAt: "9999-01-01T00:00:00.000Z",
+        });
+      }
+      const running = yield* row(db, "running");
+      const missing = yield* row(db, "missing");
+      yield* orchestra.tick;
+      assert.deepEqual(requests, [null, "page-2"]);
+      const done = yield* row(db, "done");
+      assert.equal(done.status, "succeeded");
+      assert.equal(done.prNumber, 42);
+      assert.deepEqual(done.output, {
+        outcome: "fixed",
+        summary: "Verified fix.",
+      });
+      assert.deepEqual(yield* row(db, "running"), running);
+      assert.deepEqual(yield* row(db, "missing"), missing);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+      Effect.scoped,
+    ),
+  );
+});
+
+orchestrationTest(
   "completion persists the matching repository PR and frees capacity in the same tick",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
@@ -906,17 +1041,26 @@ orchestrationTest(
         devinSessionId: "existing",
       });
       yield* seed(db, "pending");
-      fake.behavior.get = () =>
-        Effect.succeed({
-          status: "succeeded",
-          output: { outcome: "fixed", summary: "Verified fix." },
-          pullRequestUrls: [
-            "https://github.com/unrelated/repo/pull/12",
-            "https://github.com/owner/repo/pull/42",
+      fake.behavior.list = () =>
+        Effect.succeed([{
+          ...remote,
+          session_id: "existing",
+          status: "exit",
+          status_detail: "finished",
+          structured_output: { outcome: "fixed", summary: "Verified fix." },
+          pull_requests: [
+            {
+              pr_url: "https://github.com/unrelated/repo/pull/12",
+              pr_state: "open",
+            },
+            {
+              pr_url: "https://github.com/owner/repo/pull/42",
+              pr_state: "open",
+            },
           ],
-        });
+        }]);
       yield* orchestra.tick;
-      assert.deepEqual(fake.gets, ["existing"]);
+      assert.deepEqual(fake.lists, [["existing"]]);
       assert.equal((yield* row(db, "running")).status, "succeeded");
       assert.deepEqual((yield* row(db, "running")).output, {
         outcome: "fixed",
@@ -949,12 +1093,16 @@ orchestrationTest(
       });
       const success = yield* row(db, "success");
       const failure = yield* row(db, "failed");
-      fake.behavior.get = () =>
-        Effect.succeed({
-          status: "failed",
-          output: { outcome: "failed", summary: "Remediation failed." },
-          pullRequestUrls: [],
-        });
+      fake.behavior.list = () =>
+        Effect.succeed([{
+          ...remote,
+          session_id: "failure",
+          status: "error",
+          structured_output: {
+            outcome: "failed",
+            summary: "Remediation failed.",
+          },
+        }]);
       yield* orchestra.tick;
       yield* orchestra.tick;
       const saved = yield* row(db, "success");
@@ -976,13 +1124,13 @@ orchestrationTest(
       }
       assert.deepEqual(yield* row(db, "failed"), failure);
       assert.equal((yield* row(db, "running")).status, "failed");
-      assert.deepEqual(fake.gets, ["failure"]);
+      assert.deepEqual(fake.lists, [["failure"]]);
       assert.equal(fake.creates.length, 0);
     }),
 );
 
 orchestrationTest(
-  "polling failure keeps the remote identity and capacity while other rows reconcile",
+  "missing list results keep their remote identity and capacity while returned rows reconcile",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
       yield* seed(db, "one", {
@@ -992,14 +1140,17 @@ orchestrationTest(
       yield* seed(db, "two", { status: "running", devinSessionId: "done" });
       yield* seed(db, "three");
       const before = yield* row(db, "one");
-      fake.behavior.get = (id) =>
-        id === "unavailable"
-          ? Effect.never.pipe(Effect.timeout(0))
-          : Effect.succeed({
-            status: "succeeded",
-            output: { outcome: "needs_human", summary: "Review needed." },
-            pullRequestUrls: [],
-          });
+      fake.behavior.list = () =>
+        Effect.succeed([{
+          ...remote,
+          session_id: "done",
+          status: "exit",
+          status_detail: "finished",
+          structured_output: {
+            outcome: "needs_human",
+            summary: "Review needed.",
+          },
+        }]);
       yield* orchestra.tick;
       assert.deepEqual(yield* row(db, "one"), before);
       assert.equal((yield* row(db, "two")).status, "succeeded");
@@ -1220,10 +1371,13 @@ for (
           status: "running",
           devinSessionId: "result",
         });
-        fake.behavior.get = () =>
-          Effect.succeed({
-            status: "succeeded",
-            output: {
+        fake.behavior.list = () =>
+          Effect.succeed([{
+            ...remote,
+            session_id: "result",
+            status: "exit",
+            status_detail: "finished",
+            structured_output: {
               outcome,
               summary: "Investigation complete.",
               verification: {
@@ -1234,8 +1388,7 @@ for (
               next_action: "Reviewer: run browser checks.",
               confidence: 0.8,
             },
-            pullRequestUrls: [],
-          });
+          }]);
         yield* orchestra.tick;
         const saved = yield* row(db, "result");
         assert.equal(saved.status, "succeeded");
@@ -1500,12 +1653,14 @@ Deno.test("restart reopens SQLite and reconciles the existing remote session wit
         })
       ).pipe(Effect.provide(layer)),
     );
-    fake.behavior.get = () =>
-      Effect.succeed<SessionState>({
-        status: "succeeded",
-        output: { outcome: "fixed", summary: "Verified fix." },
-        pullRequestUrls: [],
-      });
+    fake.behavior.list = () =>
+      Effect.succeed([{
+        ...remote,
+        session_id: "existing-session",
+        status: "exit",
+        status_detail: "finished",
+        structured_output: { outcome: "fixed", summary: "Verified fix." },
+      }]);
     await Effect.runPromise(
       Effect.gen(function* () {
         const orchestra = yield* DevinSessionOrchestrator;
@@ -1514,7 +1669,7 @@ Deno.test("restart reopens SQLite and reconciles the existing remote session wit
         assert.equal((yield* row(db, "existing")).status, "succeeded");
       }).pipe(Effect.provide(layer)),
     );
-    assert.deepEqual(fake.gets, ["existing-session"]);
+    assert.deepEqual(fake.lists, [["existing-session"]]);
     assert.equal(fake.creates.length, 0);
   } finally {
     await Deno.remove(directory, { recursive: true });
@@ -1641,7 +1796,7 @@ orchestrationTest(
         assert.equal((yield* row(db, "one")).status, "running");
         yield* Fiber.interrupt(fiber);
         yield* TestClock.adjust("1 minute");
-        assert.equal(fake.gets.length, 0);
+        assert.equal(fake.lists.length, 0);
       }).pipe(Effect.provide(TestClock.layer()), Effect.scoped);
     }),
 );
@@ -1703,7 +1858,7 @@ for (
         yield* orchestra.tick;
         assert.deepEqual(yield* row(db, "skip"), before);
         assert.deepEqual(fake.creates, []);
-        assert.deepEqual(fake.gets, []);
+        assert.deepEqual(fake.lists, []);
       }),
   );
 }
@@ -1717,7 +1872,7 @@ orchestrationTest(
       yield* orchestra.tick;
       assert.equal((yield* row(db, "unregistered")).status, "skipped");
       assert.deepEqual(fake.creates, []);
-      assert.deepEqual(fake.gets, []);
+      assert.deepEqual(fake.lists, []);
     }),
   {},
   Layer.succeed(WebhookEventProcessors, new Map()),
@@ -1791,7 +1946,7 @@ orchestrationTest(
       );
       yield* orchestra.tick;
       assert.equal(fake.creates.length, 1);
-      assert.deepEqual(fake.gets, ["devin-created-1"]);
+      assert.deepEqual(fake.lists, [["devin-created-1"]]);
     }),
   {},
   Layer.succeed(

@@ -1,12 +1,14 @@
 import { strict as assert } from "node:assert";
-import { ConfigProvider, Effect, Fiber, Result } from "effect";
+import { type Cause, ConfigProvider, Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { FetchHttpClient } from "effect/unstable/http";
 import type { Env } from "./config.ts";
 import {
   DevinClient,
+  type DevinLookupError,
   type DevinSubmissionError,
   findPullRequestNumber,
+  interpretSession,
 } from "./devin.ts";
 import type { Schema } from "effect";
 import type { HttpClientError } from "effect/unstable/http";
@@ -504,6 +506,90 @@ Deno.test("listSessions accepts 200 IDs without truncating or splitting", async 
   assert.deepEqual(result, sessions);
 });
 
+Deno.test("listSessions follows every cursor with the same filter and deduplicates requested sessions", async () => {
+  const ids = ["devin-test", "archived"];
+  const archived = { ...session, session_id: "archived", is_archived: true };
+  const updated = { ...session, status: "running", status_detail: "working" };
+  const cursors: (string | null)[] = [];
+  const result = await runWithFetch(
+    DevinClient.use((client) => client.listSessions(ids)),
+    (input) => {
+      const url = new URL(String(input));
+      assert.deepEqual(url.searchParams.getAll("session_ids"), ids);
+      assert.equal(url.searchParams.get("first"), "200");
+      assert.equal(url.searchParams.has("is_archived"), false);
+      const after = url.searchParams.get("after");
+      cursors.push(after);
+      return Promise.resolve(Response.json(
+        after === null
+          ? { items: [session], has_next_page: true, end_cursor: "next /?&" }
+          : after === "next /?&"
+          ? { items: [], has_next_page: true, end_cursor: "last" }
+          : {
+            items: [archived, updated, {
+              ...session,
+              session_id: "unrequested",
+            }],
+            has_next_page: false,
+            end_cursor: null,
+          },
+      ));
+    },
+  );
+  assert.deepEqual(cursors, [null, "next /?&", "last"]);
+  assert.deepEqual(result, [updated, archived]);
+});
+
+Deno.test("listSessions fails instead of returning partial results for broken cursors or later page failures", async () => {
+  for (
+    const variant of [
+      "missing",
+      "null",
+      "empty",
+      "repeated",
+      "cycle",
+      "http",
+      "invalid",
+    ]
+  ) {
+    let calls = 0;
+    const result = await runWithFetch(
+      DevinClient.use((client) => client.listSessions(["devin-test"])).pipe(
+        Effect.result,
+      ),
+      () => {
+        calls++;
+        if (variant === "http" && calls === 2) {
+          return Promise.resolve(new Response("unavailable", { status: 503 }));
+        }
+        return Promise.resolve(Response.json({
+          items: variant === "invalid" && calls === 2 ? [null] : [session],
+          has_next_page: true,
+          ...(variant === "missing" ? {} : {
+            end_cursor: variant === "null"
+              ? null
+              : variant === "empty"
+              ? ""
+              : variant === "cycle" && calls === 2
+              ? "second"
+              : "first",
+          }),
+        }));
+      },
+    );
+    assert.ok(Result.isFailure(result), variant);
+    assert.equal(
+      calls,
+      ["missing", "null", "empty"].includes(variant)
+        ? 1
+        : variant === "cycle"
+        ? 3
+        : 2,
+      variant,
+    );
+  }
+});
+
 Deno.test("listSessions with no IDs returns an empty array without HTTP", async () => {
   const result = await runWithFetch(
     Effect.gen(function* () {
@@ -515,6 +601,44 @@ Deno.test("listSessions with no IDs returns an empty array without HTTP", async 
     },
   );
   assert.deepEqual(result, []);
+});
+
+Deno.test("listSessions times out and aborts a stalled later page without returning partial results", async () => {
+  const started = Promise.withResolvers<void>();
+  let calls = 0;
+  let aborted = false;
+  await runWithFetch(
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      const fiber = yield* client.listSessions(["devin-test"]).pipe(
+        Effect.result,
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() => started.promise);
+      yield* TestClock.adjust("30 seconds");
+      const result = yield* Fiber.join(fiber);
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure._tag, "TimeoutError");
+      assert.equal(aborted, true);
+      assert.equal(calls, 2);
+    }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
+    (_input, init) => {
+      if (++calls === 1) {
+        return Promise.resolve(Response.json({
+          items: [session],
+          has_next_page: true,
+          end_cursor: "next",
+        }));
+      }
+      started.resolve();
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+    },
+  );
 });
 
 Deno.test("tag recovery scans every active and archived page, exact-matches tags, and deduplicates session IDs", async () => {
@@ -741,7 +865,9 @@ Deno.test("both methods surface HTTP failures without retrying", async (t) => {
           void,
           | DevinSubmissionError
           | HttpClientError.HttpClientError
-          | Schema.SchemaError,
+          | Schema.SchemaError
+          | DevinLookupError
+          | Cause.TimeoutError,
           DevinClient
         > = effect;
         const result = await runWithFetch(Effect.result(request), () => {
@@ -819,7 +945,7 @@ Deno.test("invalid JSON, invalid session data, and network errors fail", async (
   assert.equal(result.failure._tag, "SchemaError");
 });
 
-Deno.test("getSession encodes IDs, authenticates, and interprets provider states", async () => {
+Deno.test("listSessions encodes IDs, authenticates, and supplies interpretable provider states", async () => {
   for (
     const [status, detail, expected] of [
       ["new", null, "running"],
@@ -836,11 +962,17 @@ Deno.test("getSession encodes IDs, authenticates, and interprets provider states
     ]
   ) {
     const result = await runWithFetch(
-      DevinClient.use((client) => client.getSession("devin-/?#")),
+      DevinClient.use((client) => client.listSessions(["devin-/?#"])).pipe(
+        Effect.map(([session]) => interpretSession(session)),
+      ),
       (input, init) => {
         assert.equal(
-          String(input),
-          "https://api.devin.ai/v3/organizations/org-test/sessions/devin-%2F%3F%23",
+          new URL(String(input)).pathname,
+          "/v3/organizations/org-test/sessions",
+        );
+        assert.deepEqual(
+          new URL(String(input)).searchParams.getAll("session_ids"),
+          ["devin-/?#"],
         );
         assert.equal(init?.method, "GET");
         assert.equal(
@@ -848,12 +980,15 @@ Deno.test("getSession encodes IDs, authenticates, and interprets provider states
           "Bearer cog_test-key",
         );
         return Promise.resolve(Response.json({
-          ...session,
-          status,
-          status_detail: detail,
-          pull_requests: [{
-            pr_url: "https://github.com/owner/repo/pull/42",
-            pr_state: "open",
+          items: [{
+            ...session,
+            session_id: "devin-/?#",
+            status,
+            status_detail: detail,
+            pull_requests: [{
+              pr_url: "https://github.com/owner/repo/pull/42",
+              pr_state: "open",
+            }],
           }],
         }));
       },
@@ -871,7 +1006,7 @@ Deno.test("getSession encodes IDs, authenticates, and interprets provider states
   }
 });
 
-Deno.test("getSession validates terminal outcomes and ignores intermediate output", async () => {
+Deno.test("listed sessions validate terminal outcomes and ignore intermediate output", async () => {
   for (
     const [status, status_detail, fallback] of [
       ["running", "working", null],
@@ -897,13 +1032,17 @@ Deno.test("getSession validates terminal outcomes and ignores intermediate outpu
           ...(confidence === undefined ? {} : { confidence }),
         };
         const result = await runWithFetch(
-          DevinClient.use((client) => client.getSession("devin-test")),
+          DevinClient.use((client) => client.listSessions(["devin-test"])).pipe(
+            Effect.map(([session]) => interpretSession(session)),
+          ),
           () =>
             Promise.resolve(Response.json({
-              ...session,
-              status,
-              status_detail,
-              structured_output: output,
+              items: [{
+                ...session,
+                status,
+                status_detail,
+                structured_output: output,
+              }],
             })),
         );
         assert.deepEqual(result.output, fallback === null ? null : output);
@@ -929,13 +1068,17 @@ Deno.test("getSession validates terminal outcomes and ignores intermediate outpu
       ]
     ) {
       const result = await runWithFetch(
-        DevinClient.use((client) => client.getSession("devin-test")),
+        DevinClient.use((client) => client.listSessions(["devin-test"])).pipe(
+          Effect.map(([session]) => interpretSession(session)),
+        ),
         () =>
           Promise.resolve(Response.json({
-            ...session,
-            status,
-            status_detail,
-            structured_output,
+            items: [{
+              ...session,
+              status,
+              status_detail,
+              structured_output,
+            }],
           })),
       );
       assert.deepEqual(
@@ -952,7 +1095,7 @@ Deno.test("getSession validates terminal outcomes and ignores intermediate outpu
   }
 });
 
-Deno.test("getSession preserves full evidence and rejects malformed evidence fields", async () => {
+Deno.test("listed sessions preserve full evidence and reject malformed evidence fields", async () => {
   const base = {
     outcome: "already_resolved",
     summary: "Existing fix verified.",
@@ -972,13 +1115,17 @@ Deno.test("getSession preserves full evidence and rejects malformed evidence fie
       confidence: 0.75,
     };
     const result = await runWithFetch(
-      DevinClient.use((client) => client.getSession("devin-test")),
+      DevinClient.use((client) => client.listSessions(["devin-test"])).pipe(
+        Effect.map(([session]) => interpretSession(session)),
+      ),
       () =>
         Promise.resolve(Response.json({
-          ...session,
-          status: "exit",
-          status_detail: "finished",
-          structured_output: output,
+          items: [{
+            ...session,
+            status: "exit",
+            status_detail: "finished",
+            structured_output: output,
+          }],
         })),
     );
     assert.deepEqual(result.output, output);
@@ -1000,13 +1147,17 @@ Deno.test("getSession preserves full evidence and rejects malformed evidence fie
     ]
   ) {
     const result = await runWithFetch(
-      DevinClient.use((client) => client.getSession("devin-test")),
+      DevinClient.use((client) => client.listSessions(["devin-test"])).pipe(
+        Effect.map(([session]) => interpretSession(session)),
+      ),
       () =>
         Promise.resolve(Response.json({
-          ...session,
-          status: "exit",
-          status_detail: "finished",
-          structured_output: { ...base, ...fields },
+          items: [{
+            ...session,
+            status: "exit",
+            status_detail: "finished",
+            structured_output: { ...base, ...fields },
+          }],
         })),
     );
     assert.deepEqual(result.output, {

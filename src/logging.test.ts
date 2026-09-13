@@ -70,7 +70,13 @@ const withPipeline = (
         Response.json({ error: "SECRET_RESPONSE_BODY" }, { status }),
       );
     }
-    return Promise.resolve(Response.json({
+    if (url.pathname.endsWith("/sessions/insights")) {
+      return Promise.resolve(
+        Response.json({ items: [], has_next_page: false }),
+      );
+    }
+    assert.equal(url.pathname, "/v3/organizations/org-test/sessions");
+    const session = {
       session_id: "remote-42",
       url: "https://app.devin.ai/sessions/remote-42",
       status: init?.method === "POST" ? "new" : "exit",
@@ -81,7 +87,12 @@ const withPipeline = (
       acus_consumed: 0,
       tags: [],
       pull_requests: [],
-    }));
+    };
+    return Promise.resolve(Response.json(
+      init?.method === "POST"
+        ? session
+        : { items: [session], has_next_page: false },
+    ));
   };
   return Effect.runPromise(
     Effect.gen(function* () {
@@ -218,6 +229,14 @@ Deno.test("JSON logs correlate concurrent requests through queue, processor, cli
         finished.annotations.tick_id,
         created.annotations.tick_id,
       );
+      const polls = logs.filter((log) =>
+        log.message === "operation.completed" &&
+        log.annotations.component === "DevinClient" &&
+        log.annotations.operation === "listSessions"
+      );
+      assert.equal(polls.length, 1);
+      assert.equal(polls[0].annotations.session_count, 1);
+      assert.equal(polls[0].annotations.tick_id, finished.annotations.tick_id);
     })
   ));
 
