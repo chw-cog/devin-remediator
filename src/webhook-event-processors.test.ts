@@ -69,7 +69,11 @@ Deno.test("issues processor creates a session for the exact added devin label an
   assert.equal(requests[0].playbook_id, "playbook-test");
   assert.equal(requests[0].title, "GitHub issues: owner/repo");
   assert.deepEqual(requests[0].repos, ["owner/repo"]);
-  assert.deepEqual(requests[0].tags, ["delivery-id:delivery-1", "issue:42"]);
+  assert.deepEqual(requests[0].tags, [
+    "delivery-id:delivery-1",
+    "github:owner/repo",
+    "issue:42",
+  ]);
   assert.match(requests[0].prompt, /Issue: 42/);
   assert.match(requests[0].prompt, /Delivery: delivery-1/);
   assert.ok(requests[0].prompt.endsWith(delivery.payload));
@@ -261,8 +265,57 @@ If you cannot establish the bug or verify a safe fix, stop and return the eviden
     assert.equal(init.method, "POST");
     assert.ok(stored);
     assert.equal(body.playbook_id, "playbook-test");
+    assert.equal(body.structured_output_required, true);
+    const schema = body.structured_output_schema;
+    assert.equal(schema.type, "object");
+    assert.deepEqual(schema.required, ["outcome", "summary"]);
+    assert.equal(schema.additionalProperties, false);
+    assert.equal(schema.properties.outcome.type, "string");
+    assert.deepEqual(schema.properties.outcome.enum, [
+      "fixed",
+      "needs_human",
+      "not_reproducible",
+      "failed",
+      "already_resolved",
+    ]);
+    assert.equal(schema.properties.summary.type, "string");
+    assert.equal(schema.properties.summary.minLength, 1);
+    assert.equal(schema.properties.summary.pattern, "\\S");
+    assert.equal(schema.properties.confidence.type, "number");
+    assert.equal(schema.properties.confidence.minimum, 0);
+    assert.equal(schema.properties.confidence.maximum, 1);
+    const verification = schema.properties.verification;
+    assert.equal(verification.type, "object");
+    assert.deepEqual(verification.required, ["status", "evidence"]);
+    assert.equal(verification.additionalProperties, false);
+    assert.deepEqual(verification.properties.status.enum, [
+      "passed",
+      "failed",
+      "partial",
+      "not_run",
+    ]);
+    assert.equal(verification.properties.evidence.type, "array");
+    assert.equal(verification.properties.evidence.items.type, "string");
+    assert.equal(verification.properties.evidence.items.pattern, "\\S");
+    for (const field of ["blocker", "next_action"]) {
+      assert.deepEqual(
+        schema.properties[field].anyOf.map((variant: { type: string }) =>
+          variant.type
+        ),
+        ["string", "null"],
+      );
+    }
+    assert.match(body.prompt, /Include verification/);
+    assert.match(
+      body.prompt,
+      /already_resolved only when an existing fix is verified/,
+    );
     assert.deepEqual(body.repos, ["owner/repo"]);
-    assert.deepEqual(body.tags, ["delivery-id:delivery-1", "issue:42"]);
+    assert.deepEqual(body.tags, [
+      "delivery-id:delivery-1",
+      "github:owner/repo",
+      "issue:42",
+    ]);
     assert.ok(body.prompt.endsWith(delivery.payload));
     sessions++;
     return Promise.resolve(Response.json({

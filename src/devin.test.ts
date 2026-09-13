@@ -692,7 +692,159 @@ Deno.test("getSession encodes IDs, authenticates, and interprets provider states
     );
     assert.deepEqual(result, {
       status: expected,
+      output: expected === "running" ? null : {
+        outcome: expected === "succeeded" ? "needs_human" : "failed",
+        summary: expected === "succeeded"
+          ? "Session completed without a valid structured remediation result."
+          : "Session failed without a valid structured remediation result.",
+      },
       pullRequestUrls: ["https://github.com/owner/repo/pull/42"],
+    });
+  }
+});
+
+Deno.test("getSession validates terminal outcomes and ignores intermediate output", async () => {
+  for (
+    const [status, status_detail, fallback] of [
+      ["running", "working", null],
+      ["running", "finished", "needs_human"],
+      ["exit", "finished", "needs_human"],
+      ["error", "error", "failed"],
+      ["suspended", "out_of_credits", "failed"],
+    ] as const
+  ) {
+    for (
+      const outcome of [
+        "fixed",
+        "needs_human",
+        "not_reproducible",
+        "failed",
+        "already_resolved",
+      ]
+    ) {
+      for (const confidence of [undefined, 0, 0.7, 1]) {
+        const output = {
+          outcome,
+          summary: "Verified result",
+          ...(confidence === undefined ? {} : { confidence }),
+        };
+        const result = await runWithFetch(
+          DevinClient.use((client) => client.getSession("devin-test")),
+          () =>
+            Promise.resolve(Response.json({
+              ...session,
+              status,
+              status_detail,
+              structured_output: output,
+            })),
+        );
+        assert.deepEqual(result.output, fallback === null ? null : output);
+      }
+    }
+    for (
+      const structured_output of [
+        undefined,
+        null,
+        "not an object",
+        [],
+        {},
+        { outcome: "unknown", summary: "Result" },
+        { outcome: "fixed" },
+        { outcome: "fixed", summary: "" },
+        { outcome: "fixed", summary: " \n\t" },
+        { outcome: "fixed", summary: 123 },
+        { outcome: "fixed", summary: "Result", confidence: -0.1 },
+        { outcome: "fixed", summary: "Result", confidence: 1.1 },
+        { outcome: "fixed", summary: "Result", confidence: "high" },
+        { outcome: "fixed", summary: "Result", confidence: null },
+        { outcome: "fixed", summary: "Result", extra: true },
+      ]
+    ) {
+      const result = await runWithFetch(
+        DevinClient.use((client) => client.getSession("devin-test")),
+        () =>
+          Promise.resolve(Response.json({
+            ...session,
+            status,
+            status_detail,
+            structured_output,
+          })),
+      );
+      assert.deepEqual(
+        result.output,
+        fallback === null ? null : {
+          outcome: fallback,
+          summary: fallback === "needs_human"
+            ? "Session completed without a valid structured remediation result."
+            : "Session failed without a valid structured remediation result.",
+        },
+        JSON.stringify(structured_output),
+      );
+    }
+  }
+});
+
+Deno.test("getSession preserves full evidence and rejects malformed evidence fields", async () => {
+  const base = {
+    outcome: "already_resolved",
+    summary: "Existing fix verified.",
+  };
+  for (const status of ["passed", "failed", "partial", "not_run"]) {
+    const output = {
+      ...base,
+      verification: {
+        status,
+        evidence: status === "not_run" ? [] : [
+          "https://github.com/owner/repo/pull/42",
+          "deno test: passed",
+        ],
+      },
+      blocker: status === "passed" ? null : "Browser verification unavailable.",
+      next_action: status === "passed" ? null : "Reviewer: run browser checks.",
+      confidence: 0.75,
+    };
+    const result = await runWithFetch(
+      DevinClient.use((client) => client.getSession("devin-test")),
+      () =>
+        Promise.resolve(Response.json({
+          ...session,
+          status: "exit",
+          status_detail: "finished",
+          structured_output: output,
+        })),
+    );
+    assert.deepEqual(result.output, output);
+  }
+  for (
+    const fields of [
+      { verification: null },
+      { verification: {} },
+      { verification: { status: "unknown", evidence: [] } },
+      { verification: { status: "passed" } },
+      { verification: { status: "passed", evidence: "passed" } },
+      { verification: { status: "passed", evidence: [" "] } },
+      { verification: { status: "passed", evidence: [42] } },
+      { verification: { status: "passed", evidence: [], extra: true } },
+      { blocker: "" },
+      { blocker: 42 },
+      { next_action: " \n" },
+      { next_action: [] },
+    ]
+  ) {
+    const result = await runWithFetch(
+      DevinClient.use((client) => client.getSession("devin-test")),
+      () =>
+        Promise.resolve(Response.json({
+          ...session,
+          status: "exit",
+          status_detail: "finished",
+          structured_output: { ...base, ...fields },
+        })),
+    );
+    assert.deepEqual(result.output, {
+      outcome: "needs_human",
+      summary:
+        "Session completed without a valid structured remediation result.",
     });
   }
 });

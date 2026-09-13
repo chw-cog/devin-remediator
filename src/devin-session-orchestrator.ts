@@ -105,7 +105,7 @@ export class DevinSessionOrchestrator extends Context.Service<
                 ...work,
                 session: { ...work.session, devinSessionId: remote.session_id },
               },
-              state.status,
+              state,
               findPullRequestNumber(
                 state.pullRequestUrls,
                 work.delivery.repo,
@@ -144,7 +144,7 @@ export class DevinSessionOrchestrator extends Context.Service<
           );
           const changed = yield* repository.finish(
             work,
-            remote.status,
+            remote,
             prNumber,
           );
           if (changed) {
@@ -155,6 +155,7 @@ export class DevinSessionOrchestrator extends Context.Service<
             ).pipe(
               Effect.annotateLogs({
                 status: remote.status,
+                outcome: remote.output.outcome,
                 pr_number: prNumber,
               }),
             );

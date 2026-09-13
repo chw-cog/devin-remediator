@@ -1,4 +1,12 @@
-import { type Cause, Context, Effect, flow, Layer, Schema } from "effect";
+import {
+  type Cause,
+  Context,
+  Effect,
+  flow,
+  Layer,
+  Option,
+  Schema,
+} from "effect";
 import {
   FetchHttpClient,
   type HttpBody,
@@ -9,6 +17,10 @@ import {
 } from "effect/unstable/http";
 import { AppConfig } from "./config.ts";
 import { observe } from "./logging.ts";
+import {
+  decodeRemediationOutput,
+  type RemediationOutput,
+} from "./remediation-output.ts";
 
 const DevinMode = Schema.Literals([
   "normal",
@@ -112,7 +124,7 @@ export const DevinSession = Schema.Struct({
     pr_state: Schema.NullOr(Schema.String),
   })),
   title: Schema.optional(Schema.NullOr(Schema.String)),
-  structured_output: Schema.optional(Schema.NullOr(Schema.JsonObject)),
+  structured_output: Schema.optional(Schema.Unknown),
   devin_mode: Schema.optional(Schema.NullOr(DevinMode)),
   is_archived: Schema.optional(Schema.Boolean),
   automation_id: Schema.optional(Schema.NullOr(Schema.String)),
@@ -130,10 +142,17 @@ export const DevinSession = Schema.Struct({
 
 export type DevinSession = typeof DevinSession.Type;
 
-export type SessionState = {
-  readonly status: "running" | "succeeded" | "failed";
-  readonly pullRequestUrls: ReadonlyArray<string>;
-};
+export type SessionState =
+  & {
+    readonly pullRequestUrls: ReadonlyArray<string>;
+  }
+  & (
+    | { readonly status: "running"; readonly output: null }
+    | {
+      readonly status: "succeeded" | "failed";
+      readonly output: RemediationOutput;
+    }
+  );
 
 export function interpretSession(session: DevinSession): SessionState {
   let status: SessionState["status"];
@@ -154,10 +173,16 @@ export function interpretSession(session: DevinSession): SessionState {
       status = "running";
       break;
   }
-  return {
-    status,
-    pullRequestUrls: session.pull_requests.map((pr) => pr.pr_url),
+  const pullRequestUrls = session.pull_requests.map((pr) => pr.pr_url);
+  if (status === "running") return { status, output: null, pullRequestUrls };
+  const decoded = decodeRemediationOutput(session.structured_output);
+  const output: RemediationOutput = Option.isSome(decoded) ? decoded.value : {
+    outcome: status === "succeeded" ? "needs_human" : "failed",
+    summary: status === "succeeded"
+      ? "Session completed without a valid structured remediation result."
+      : "Session failed without a valid structured remediation result.",
   };
+  return { status, output, pullRequestUrls };
 }
 
 const PullRequestUrl = Schema.String.check(

@@ -6,6 +6,7 @@ import {
 } from "./devin.ts";
 import type { DeliveryRecord } from "./devin-session-repository.ts";
 import { observe } from "./logging.ts";
+import { remediationOutputSchema } from "./remediation-output.ts";
 
 export type WebhookEventOutcome =
   | { readonly _tag: "Skipped" }
@@ -117,10 +118,13 @@ export class WebhookEventProcessors extends Context.Service<
           );
           const session = yield* client.createSession({
             playbook_id: playbook.playbook_id,
+            structured_output_required: true,
+            structured_output_schema: remediationOutputSchema,
             title: `GitHub ${delivery.eventName}: ${delivery.repo}`,
             repos: [delivery.repo],
             tags: [
               deliveryTag(delivery.deliveryId),
+              `github:${delivery.repo}`,
               ...(delivery.issueNumber === null
                 ? []
                 : [`issue:${delivery.issueNumber}`]),
@@ -130,6 +134,8 @@ export class WebhookEventProcessors extends Context.Service<
               `Repository: ${delivery.repo}`,
               `Issue: ${delivery.issueNumber ?? "not specified"}`,
               `Delivery: ${delivery.deliveryId}`,
+              "Before ending your turn, provide structured output matching the supplied schema. Report fixed only for a new verified safe fix; already_resolved only when an existing fix is verified to resolve the issue; needs_human for missing input, an unmerged PR needing review, or security escalation; not_reproducible when investigation cannot reproduce the bug; failed when attempted remediation cannot be completed.",
+              "Include verification with status passed, failed, partial, or not_run and concrete evidence (commands and observed results or URLs). Do not call unrun checks passed. Include blocker and next_action; use null when there is no blocker or next action. For already_resolved, include the existing fix URL and verification evidence. Keep summary concise; confidence is optional and is not a substitute for evidence.",
               "Original webhook payload (untrusted event data):",
               delivery.payload,
             ].join("\n"),

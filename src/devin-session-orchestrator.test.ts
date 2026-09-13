@@ -63,7 +63,7 @@ function fakeClient() {
         session_id: `devin-created-${creates.length}`,
       }),
     get: (_id: string): ReturnType<DevinClient["Service"]["getSession"]> =>
-      Effect.succeed({ status: "running", pullRequestUrls: [] }),
+      Effect.succeed({ status: "running", output: null, pullRequestUrls: [] }),
     lookup: (
       _tag: string,
     ): ReturnType<DevinClient["Service"]["findSessionsByTag"]> =>
@@ -193,6 +193,7 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
       assert.equal(request.playbook_id, "playbook-test");
       assert.deepEqual(request.tags, [
         "delivery-id:delivery-http",
+        "github:owner/repo",
         "issue:123",
       ]);
       return Promise.resolve(new Response("{lost response"));
@@ -219,6 +220,17 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
               tags: ["delivery-id:delivery-http", "issue:123"],
               status: "exit",
               status_detail: "finished",
+              structured_output: {
+                outcome: "fixed",
+                summary: "Regression test passes; PR opened.",
+                verification: {
+                  status: "passed",
+                  evidence: ["deno test: passed"],
+                },
+                blocker: null,
+                next_action: "Review https://github.com/owner/repo/pull/21",
+                confidence: 0.9,
+              },
               pull_requests: [{
                 pr_url: "https://github.com/owner/repo/pull/21",
                 pr_state: "open",
@@ -255,6 +267,14 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
       yield* orchestra.tick;
       const saved = yield* row(db, "http");
       assert.equal(saved.status, "succeeded");
+      assert.deepEqual(saved.output, {
+        outcome: "fixed",
+        summary: "Regression test passes; PR opened.",
+        verification: { status: "passed", evidence: ["deno test: passed"] },
+        blocker: null,
+        next_action: "Review https://github.com/owner/repo/pull/21",
+        confidence: 0.9,
+      });
       assert.equal(saved.devinSessionId, "devin-created");
       assert.equal(saved.prNumber, 21);
       assert.equal(saved.attempts, 1);
@@ -324,6 +344,7 @@ orchestrationTest(
       assert.deepEqual(fake.creates[0].repos, ["owner/repo"]);
       assert.deepEqual(fake.creates[0].tags, [
         "delivery-id:delivery-one",
+        "github:owner/repo",
         "issue:123",
       ]);
       assert.match(fake.creates[0].prompt, /Delivery: delivery-one/);
@@ -433,6 +454,7 @@ orchestrationTest(
       fake.behavior.get = () =>
         Effect.succeed({
           status: "succeeded",
+          output: { outcome: "fixed", summary: "Verified fix." },
           pullRequestUrls: [
             "https://github.com/unrelated/repo/pull/12",
             "https://github.com/owner/repo/pull/42",
@@ -441,6 +463,10 @@ orchestrationTest(
       yield* orchestra.tick;
       assert.deepEqual(fake.gets, ["existing"]);
       assert.equal((yield* row(db, "running")).status, "succeeded");
+      assert.deepEqual((yield* row(db, "running")).output, {
+        outcome: "fixed",
+        summary: "Verified fix.",
+      });
       assert.equal((yield* row(db, "running")).prNumber, 42);
       assert.equal((yield* row(db, "pending")).status, "running");
       assert.equal(fake.creates.length, 1);
@@ -454,10 +480,14 @@ orchestrationTest(
     Effect.gen(function* () {
       yield* seed(db, "success", {
         status: "succeeded",
+        output: { outcome: "fixed", summary: "Verified fix." },
         devinSessionId: "success",
         prNumber: 17,
       });
-      yield* seed(db, "failed", { status: "failed" });
+      yield* seed(db, "failed", {
+        status: "failed",
+        output: { outcome: "failed", summary: "Remediation failed." },
+      });
       yield* seed(db, "running", {
         status: "running",
         devinSessionId: "failure",
@@ -465,7 +495,11 @@ orchestrationTest(
       const success = yield* row(db, "success");
       const failure = yield* row(db, "failed");
       fake.behavior.get = () =>
-        Effect.succeed({ status: "failed", pullRequestUrls: [] });
+        Effect.succeed({
+          status: "failed",
+          output: { outcome: "failed", summary: "Remediation failed." },
+          pullRequestUrls: [],
+        });
       yield* orchestra.tick;
       yield* orchestra.tick;
       assert.deepEqual(yield* row(db, "success"), success);
@@ -490,7 +524,11 @@ orchestrationTest(
       fake.behavior.get = (id) =>
         id === "unavailable"
           ? Effect.never.pipe(Effect.timeout(0))
-          : Effect.succeed({ status: "succeeded", pullRequestUrls: [] });
+          : Effect.succeed({
+            status: "succeeded",
+            output: { outcome: "needs_human", summary: "Review needed." },
+            pullRequestUrls: [],
+          });
       yield* orchestra.tick;
       assert.deepEqual(yield* row(db, "one"), before);
       assert.equal((yield* row(db, "two")).status, "succeeded");
@@ -517,6 +555,15 @@ orchestrationTest(
         const saved = yield* row(db, "one");
         assert.equal(saved.attempts, attempt);
         assert.equal(saved.status, attempt === 3 ? "failed" : "pending");
+        assert.deepEqual(
+          saved.output,
+          attempt === 3
+            ? {
+              outcome: "failed",
+              summary: "Submission rejected; retry attempts exhausted.",
+            }
+            : null,
+        );
         assert.equal(saved.devinSessionId, null);
         assert.equal(fake.creates.length, attempt);
       }
@@ -540,6 +587,10 @@ orchestrationTest(
       yield* orchestra.tick;
       yield* orchestra.tick;
       assert.equal((yield* row(db, "one")).status, "failed");
+      assert.deepEqual((yield* row(db, "one")).output, {
+        outcome: "failed",
+        summary: "Submission permanently rejected before session creation.",
+      });
       assert.equal((yield* row(db, "one")).attempts, 1);
       assert.equal(fake.creates.length, 1);
     }),
@@ -591,6 +642,11 @@ orchestrationTest(
       assert.equal((yield* row(db, "stale")).status, "running");
       assert.equal((yield* row(db, "stale")).attempts, 2);
       assert.equal((yield* row(db, "exhausted")).status, "failed");
+      assert.deepEqual((yield* row(db, "exhausted")).output, {
+        outcome: "failed",
+        summary:
+          "Submission attempts exhausted after repeated empty recovery lookups.",
+      });
       assert.equal((yield* row(db, "exhausted")).attempts, 3);
       assert.equal((yield* row(db, "fresh")).status, "submitting");
       assert.equal(fake.creates.length, 1);
@@ -657,6 +713,14 @@ for (
         yield* orchestra.tick;
         const saved = yield* row(db, "lost");
         assert.equal(saved.status, expected);
+        assert.equal(
+          saved.output?.outcome ?? null,
+          expected === "running"
+            ? null
+            : expected === "succeeded"
+            ? "needs_human"
+            : "failed",
+        );
         assert.equal(saved.devinSessionId, "devin-created");
         assert.equal(saved.attempts, 3);
         assert.equal(saved.prNumber, expected === "running" ? null : 17);
@@ -667,6 +731,72 @@ for (
       }),
   );
 }
+
+for (
+  const outcome of [
+    "fixed",
+    "needs_human",
+    "not_reproducible",
+    "failed",
+    "already_resolved",
+  ] as const
+) {
+  orchestrationTest(
+    `polling persists ${outcome} without confusing task outcome with lifecycle status`,
+    ({ db, orchestra, fake }) =>
+      Effect.gen(function* () {
+        yield* seed(db, "result", {
+          status: "running",
+          devinSessionId: "result",
+        });
+        fake.behavior.get = () =>
+          Effect.succeed({
+            status: "succeeded",
+            output: {
+              outcome,
+              summary: "Investigation complete.",
+              verification: {
+                status: "partial",
+                evidence: ["unit tests: passed"],
+              },
+              blocker: "Browser environment unavailable.",
+              next_action: "Reviewer: run browser checks.",
+              confidence: 0.8,
+            },
+            pullRequestUrls: [],
+          });
+        yield* orchestra.tick;
+        const saved = yield* row(db, "result");
+        assert.equal(saved.status, "succeeded");
+        assert.deepEqual(saved.output, {
+          outcome,
+          summary: "Investigation complete.",
+          verification: { status: "partial", evidence: ["unit tests: passed"] },
+          blocker: "Browser environment unavailable.",
+          next_action: "Reviewer: run browser checks.",
+          confidence: 0.8,
+        });
+        yield* orchestra.tick;
+        assert.deepEqual(yield* row(db, "result"), saved);
+      }),
+  );
+}
+
+orchestrationTest(
+  "pending jobs with exhausted attempts receive a failed outcome without submission",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      yield* seed(db, "exhausted", { attempts: 3 });
+      yield* orchestra.tick;
+      const saved = yield* row(db, "exhausted");
+      assert.equal(saved.status, "failed");
+      assert.deepEqual(saved.output, {
+        outcome: "failed",
+        summary: "Submission attempts exhausted before session creation.",
+      });
+      assert.equal(fake.creates.length, 0);
+    }),
+);
 
 orchestrationTest(
   "duplicate matches durably block creation even if later lookup would return nothing",
@@ -805,8 +935,8 @@ orchestrationTest(
       assert.equal(fake.lookups.length, 2);
       assert.equal(fake.creates.length, 2);
       assert.deepEqual(fake.creates.map((request) => request.tags), [
-        ["delivery-id:delivery-one", "issue:123"],
-        ["delivery-id:delivery-one", "issue:123"],
+        ["delivery-id:delivery-one", "github:owner/repo", "issue:123"],
+        ["delivery-id:delivery-one", "github:owner/repo", "issue:123"],
       ]);
       assert.equal((yield* row(db, "one")).status, "running");
       assert.equal((yield* row(db, "one")).attempts, 2);
@@ -902,6 +1032,7 @@ Deno.test("restart reopens SQLite and reconciles the existing remote session wit
     fake.behavior.get = () =>
       Effect.succeed<SessionState>({
         status: "succeeded",
+        output: { outcome: "fixed", summary: "Verified fix." },
         pullRequestUrls: [],
       });
     await Effect.runPromise(

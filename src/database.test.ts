@@ -141,12 +141,107 @@ databaseTest(
           "skipped",
         ] as const
       ) {
-        yield* db.update(devinSessions).set({ status });
+        yield* db.update(devinSessions).set({
+          status,
+          output: status === "succeeded" || status === "failed"
+            ? { outcome: "failed", summary: "Remediation failed." }
+            : null,
+        });
         assert.equal(
           (yield* db.select().from(devinSessions).get())?.status,
           status,
         );
       }
+    }),
+);
+
+databaseTest(
+  "output is a JSON result exactly for succeeded and failed rows",
+  (db) =>
+    Effect.gen(function* () {
+      yield* db.insert(githubWebhookDeliveries).values(delivery);
+      yield* db.insert(devinSessions).values({
+        id: "outcome-row",
+        githubDeliveryId: delivery.deliveryId,
+        status: "pending",
+        insertedAt,
+        updatedAt: insertedAt,
+      });
+      for (
+        const status of [
+          "pending",
+          "submitting",
+          "running",
+          "succeeded",
+          "failed",
+          "skipped",
+        ]
+      ) {
+        for (
+          const outcome of [
+            null,
+            "fixed",
+            "needs_human",
+            "not_reproducible",
+            "failed",
+            "already_resolved",
+            "invalid",
+          ]
+        ) {
+          const output = outcome === null ? null : {
+            outcome,
+            summary: "Investigation complete.",
+          };
+          const update = db.$client.unsafe(
+            "UPDATE devin_sessions SET status = ?, output = ? WHERE id = ?",
+            [
+              status,
+              output === null ? null : JSON.stringify(output),
+              "outcome-row",
+            ],
+          );
+          const terminal = status === "succeeded" || status === "failed";
+          const valid = terminal
+            ? outcome !== null && outcome !== "invalid"
+            : outcome === null;
+          if (valid) {
+            yield* update;
+            const saved = yield* db.select().from(devinSessions).get();
+            assert.equal(saved?.status, status);
+            assert.deepEqual(saved?.output, output);
+          } else {
+            yield* assertSqlFailure(update, /CHECK constraint failed/);
+          }
+        }
+      }
+      for (
+        const output of [
+          "invalid json",
+          "null",
+          "[]",
+          '"fixed"',
+          "{}",
+          '{"outcome":"fixed"}',
+          '{"summary":"Result"}',
+          '{"outcome":null,"summary":"Result"}',
+          '{"outcome":"fixed","summary":null}',
+          '{"outcome":"fixed","summary":42}',
+          '{"outcome":"fixed","summary":""}',
+          '{"outcome":"fixed","summary":" "}',
+        ]
+      ) {
+        yield* assertSqlFailure(
+          db.$client.unsafe(
+            "UPDATE devin_sessions SET status = 'succeeded', output = ?",
+            [output],
+          ),
+          /CHECK constraint failed/,
+        );
+      }
+      yield* assertSqlFailure(
+        db.$client`UPDATE devin_sessions SET status = NULL`,
+        /NOT NULL constraint failed/,
+      );
     }),
 );
 
@@ -208,6 +303,109 @@ Deno.test("DatabaseClient.layer closes the connection after success", async () =
   assert.ok(Result.isFailure(result));
   assert.ok(result.failure.reason.cause instanceof Error);
   assert.match(result.failure.reason.cause.message, /closed/i);
+});
+
+Deno.test("JSON output migration preserves existing outcomes and recovery state", async () => {
+  const sqlite = createClient({ url: "file::memory:" });
+  try {
+    await sqlite.execute("PRAGMA foreign_keys = ON");
+    for (
+      const migration of [
+        "20260913080724_webhook_queue",
+        "20260914000000_skipped_webhooks",
+        "20260914000001_delivery_tag_recovery",
+        "20260914000002_session_outcomes",
+      ]
+    ) {
+      await sqlite.executeMultiple(
+        await Deno.readTextFile(
+          new URL(`../migrations/${migration}/migration.sql`, import.meta.url),
+        ),
+      );
+    }
+    const cases = [
+      ["pending", null],
+      ["submitting", null],
+      ["running", null],
+      ["skipped", null],
+      ["succeeded", "fixed"],
+      ["succeeded", "needs_human"],
+      ["succeeded", "not_reproducible"],
+      ["failed", "failed"],
+    ] as const;
+    for (const [index, [status, outcome]] of cases.entries()) {
+      await sqlite.execute({
+        sql: `INSERT INTO github_webhook_deliveries
+          (id, delivery_id, event_name, repo, payload, inserted_at)
+          VALUES (?, ?, 'issues', 'owner/repo', '{}', ?)`,
+        args: [`delivery-${index}`, `github-${index}`, insertedAt],
+      });
+      await sqlite.execute({
+        sql: `INSERT INTO devin_sessions
+          (id, github_delivery_id, status, outcome, devin_session_id, pr_number,
+           attempts, claim_version, recovery_empty_checks, recovery_blocked,
+           inserted_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, 2, 7, 1, 1, ?, ?)`,
+        args: [
+          `session-${index}`,
+          `github-${index}`,
+          status,
+          outcome,
+          `remote-${index}`,
+          index + 1,
+          insertedAt,
+          insertedAt,
+        ],
+      });
+    }
+    const before = (await sqlite.execute(
+      "SELECT * FROM devin_sessions ORDER BY id",
+    )).rows;
+    await sqlite.executeMultiple(
+      await Deno.readTextFile(
+        new URL(
+          "../migrations/20260914000003_session_output/migration.sql",
+          import.meta.url,
+        ),
+      ),
+    );
+    const after = (await sqlite.execute(
+      "SELECT * FROM devin_sessions ORDER BY id",
+    )).rows;
+    assert.deepEqual(
+      after,
+      before.map(({ outcome, ...row }) => ({
+        ...row,
+        output: outcome === null ? null : JSON.stringify({
+          outcome,
+          summary: "Legacy session: structured output was not recorded.",
+        }),
+      })),
+    );
+    await sqlite.execute({
+      sql: "UPDATE devin_sessions SET output = ? WHERE id = 'session-4'",
+      args: [JSON.stringify({
+        outcome: "already_resolved",
+        summary: "Existing fix verified.",
+        verification: {
+          status: "passed",
+          evidence: ["Regression test passes against the existing fix."],
+        },
+        blocker: null,
+        next_action: null,
+      })],
+    });
+    const columns =
+      (await sqlite.execute("PRAGMA table_info(devin_sessions)")).rows;
+    assert.ok(columns.some((column) => column.name === "output"));
+    assert.ok(!columns.some((column) => column.name === "outcome"));
+    assert.deepEqual(
+      (await sqlite.execute("PRAGMA foreign_key_check")).rows,
+      [],
+    );
+  } finally {
+    sqlite.close();
+  }
 });
 
 Deno.test("DatabaseClient.layer closes the connection after failure", async () => {
@@ -326,6 +524,16 @@ Deno.test("forward migration preserves populated old jobs and enforces constrain
             yield* db.select().from(devinSessions),
             before.sessions.map((session) => ({
               ...session,
+              output:
+                session.status === "succeeded" || session.status === "failed"
+                  ? {
+                    outcome: session.status === "succeeded"
+                      ? "needs_human"
+                      : "failed",
+                    summary:
+                      "Legacy session: structured output was not recorded.",
+                  }
+                  : null,
               claimVersion: 0,
               recoveryEmptyChecks: 0,
               recoveryBlocked: false,

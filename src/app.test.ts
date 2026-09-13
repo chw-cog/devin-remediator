@@ -149,6 +149,7 @@ databaseTest(
         id: session.id,
         githubDeliveryId: event,
         status: "pending",
+        output: null,
         devinSessionId: null,
         prNumber: null,
         attempts: 0,

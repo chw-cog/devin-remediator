@@ -147,7 +147,11 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
     getSession: (id) =>
       Effect.sync(() => {
         gets.push(id);
-        return { status: "running" as const, pullRequestUrls: [] };
+        return {
+          status: "running" as const,
+          output: null,
+          pullRequestUrls: [],
+        };
       }),
     listSessions: () => Effect.die("Unexpected listSessions"),
     findSessionsByTag: () => Effect.die("Unexpected tag lookup"),
