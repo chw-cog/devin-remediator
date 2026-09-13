@@ -1,251 +1,106 @@
-# Devin remediator
+# Devin Remediator
 
-A Deno app using Hono, Effect, Octokit, and Drizzle's native Effect adapter for
-local libSQL. One Deno 2.9.6 process runs the HTTP server and
-`DevinSessionOrchestrator`. SQLite holds the durable queue and remote session
-identities. No external queue or worker process is required.
+Devin Remediator turns GitHub issues labeled `devin` into Devin sessions that
+investigate and fix bugs. It tracks each session and stores its remediation
+result, linked pull request, and session analysis.
 
-## Run locally
+## Quickstart
 
-Set `DEVIN_API_KEY`, `DEVIN_ORGANIZATION_ID`, and `GITHUB_WEBHOOK_SECRET` in
-your environment. Use the same webhook secret in GitHub's webhook settings.
-Optionally set `SQLITE_DB_FILEPATH`; `AppConfig` defaults it to
-`./devin-remediator.sqlite` when unset or empty. The parent directory must
-already exist.
-
-```sh
-deno task start
-```
-
-The server listens on `http://localhost:8000`. Use `deno task dev` for watch
-mode. If Deno is managed by mise, prefix commands with `mise exec --`. Startup
-opens one shared SQLite connection and applies migrations before listening.
-SQLite uses WAL mode and enables foreign keys. Shutdown on `SIGINT` or `SIGTERM`
-interrupts and joins the orchestrator, drains HTTP requests, then closes SQLite.
-
-## Run with Docker
-
-Create a `.env` file in the repo root (ignored by Git):
+Create a `.env` file in the repository root:
 
 ```dotenv
-DEVIN_API_KEY=dummy-devin-api-key
-DEVIN_ORGANIZATION_ID=dummy-devin-organization-id
-GITHUB_WEBHOOK_SECRET=dummy-github-webhook-secret
+DEVIN_API_KEY=<your-api-key>
+DEVIN_ORGANIZATION_ID=<your-organization-id>
+GITHUB_WEBHOOK_SECRET=<your-webhook-secret>
 SQLITE_DB_FILEPATH=/data/db.sql
 ```
 
-The dummy values let the app start. Replace them before sending real webhooks or
-creating Devin sessions. Keep the database path under `/data`, then run:
+Start the app:
 
 ```sh
-docker compose up --build -d --wait
-curl --fail http://localhost:8000/health
+docker compose up
+```
+
+The server listens on `http://localhost:8000`. Migrations run automatically, and
+SQLite data persists in a Docker volume.
+
+For local webhook forwarding through [Smee](https://smee.io), run:
+
+```sh
+MISE_ENV=local mise run webhook-forwarder
+```
+
+Use the channel URL printed by Smee, or pass `--url <channel-url>` to reuse one.
+In your GitHub repository's webhook settings, use that URL, select
+`application/json` and **Issues** events, and set the same webhook secret as
+above. For a public deployment, use `https://<your-host>/api/v1/webhook`
+instead. Add the `devin` label to an issue to trigger remediation.
+
+## Tech stack
+
+- **TypeScript on Deno** runs the HTTP server and background orchestrator in one
+  process.
+- **Hono** handles HTTP routes; **Octokit** verifies GitHub webhook signatures.
+- **Effect** manages services, concurrency, retries, and resource lifetimes.
+- **Drizzle + SQLite** persist webhook deliveries, the work queue, and session
+  results. No separate queue service is needed.
+- **Devin's v3 API** provides playbooks, remediation sessions, and session
+  insights.
+
+## Data flow
+
+```mermaid
+sequenceDiagram
+	participant GitHub
+	participant API as Webhook handler
+	participant DB as SQLite
+	participant Worker as Orchestrator
+	participant Devin as Devin API
+
+	GitHub->>API: POST /api/v1/webhook
+	API->>API: Verify signature and validate payload
+	API->>DB: Store delivery + pending job atomically
+	Note over API,DB: Duplicate delivery IDs do not create new jobs
+	API-->>GitHub: 200 OK
+
+	Worker->>DB: Claim pending jobs within concurrency limit
+	DB-->>Worker: Delivery payload + session record
+	alt Issue labeled devin
+		Worker->>Devin: Find or create remediation playbook
+		Worker->>Devin: Create session with delivery tag + output schema
+		Devin-->>Worker: Session ID
+		Worker->>DB: Save session ID and mark running
+		loop Until session finishes or fails
+			Worker->>Devin: Poll session status
+			Devin-->>Worker: Status, structured output, pull requests
+		end
+		Worker->>DB: Seal local result as succeeded or failed<br/>Store remediation output + PR number
+		opt Best-effort analysis collection
+			Worker->>Devin: Fetch insights and request generation if missing
+			Devin-->>Worker: Session analysis
+			Worker->>DB: Store analysis without changing the result
+		end
+	else Unsupported event or label
+		Worker->>DB: Mark skipped
+	end
+```
+
+The durable queue survives restarts. Transient submission failures retry within
+an attempt limit; uncertain submissions are checked by delivery tag before
+retrying. Sealing records the session's terminal result locally, not whether the
+bug was fixed. The structured remediation output captures that outcome.
+
+## Observability
+
+The app emits structured JSON logs for webhook receipt, session creation,
+completion, retries, and analysis collection. Correlate events with
+`github_delivery_id`, `session_record_id`, and `devin_session_id` as they become
+available.
+
+```sh
 docker compose logs -f app
 ```
 
-Compose runs only `app` with the Dockerfile's unchanged default command. The
-`sqlite-data` volume mounts at `/data` and stores `db.sql`. The app applies
-migrations before listening, so migration failures prevent startup. The app
-health check waits for `/health` to respond successfully. `docker compose down`
-preserves the volume; adding `--volumes` deletes it.
-
-## Endpoints
-
-`GET /health` returns `200` with `{"status":"ok"}`. This is process liveness,
-not Devin availability or queue progress. It makes no database or Devin calls.
-
-`POST /api/v1/webhook` accepts a JSON object with these headers:
-
-- `X-GitHub-Event`: a nonempty event name.
-- `X-GitHub-Delivery`: a nonempty delivery ID.
-- `X-Hub-Signature-256`: GitHub's HMAC-SHA256 signature of the raw request body.
-
-Accepted deliveries return an empty `200`. Malformed JSON, non-object payloads,
-and missing or empty required headers return `400`.
-
-Each payload must include a nonempty `repository.full_name`. If `issue` is
-present, `issue.number` must be a positive integer.
-
-Octokit's `Webhooks.verify` verifies the exact raw body using
-`GITHUB_WEBHOOK_SECRET`. The receiver then inserts a `github_webhook_deliveries`
-row and a `devin_sessions` row with status `pending` in one transaction. The
-payload is stored unchanged, including whitespace.
-
-Repeated delivery IDs return `200` without changing either row. Other database
-errors roll back both inserts and return a generic `500`. Invalid signatures and
-invalid repository or issue metadata also return a generic `500`. Missing or
-empty required server configuration prevents startup.
-
-All accepted events queue a local job. The receiver does not call Devin. The
-orchestrator reads the committed work independently and selects one processor by
-event name. The default issues processor creates a session only when `action` is
-`labeled` and the added `label.name` is exactly `devin`. Other issues deliveries
-and events without a processor become terminal `skipped`. Existing labels in
-`issue.labels` do not affect this decision. Different delivery IDs for the same
-issue can create separate sessions.
-
-## Orchestrator configuration
-
-These optional environment variables accept positive integers. Invalid values
-prevent startup.
-
-| Variable                           | Default | Meaning                                                                   |
-| ---------------------------------- | ------- | ------------------------------------------------------------------------- |
-| `DEVIN_MAX_CONCURRENT_SESSIONS`    | `3`     | Maximum local `submitting` plus `running` records                         |
-| `DEVIN_MAX_ATTEMPTS`               | `3`     | Maximum reserved submission attempts per delivery                         |
-| `DEVIN_ANALYSIS_MAX_ATTEMPTS`      | `12`    | Maximum reserved analysis collection attempts per finished remote session |
-| `DEVIN_ORCHESTRATOR_INTERVAL_MS`   | `3000`  | Delay after each completed tick                                           |
-| `DEVIN_SUBMITTING_TIMEOUT_SECONDS` | `60`    | Age at which an unknown submission becomes eligible for recovery          |
-
-`DEVIN_API_KEY` and `DEVIN_ORGANIZATION_ID` configure the existing Devin v3
-organization API client. Create, get, and complete tag lookups time out after 30
-seconds. The API key must permit session creation, inspection, and
-`ViewOrgSessions` listing in that organization. Creating the issue playbook also
-requires `ManageOrgPlaybooks` (`org.playbooks.manage`); looking it up requires
-`UseDevinSessions` (`org.devins.use`).
-
-Analysis collection also requires `ManageOrgSessions` to request generation.
-Missing permissions do not change remediation results, but collection eventually
-stops after its attempt limit.
-
-### Session analysis collection
-
-After reconciliation, recovery, and submission, each tick collects insights for
-up to three due `succeeded` or `failed` rows that have a Devin session ID. It
-batch-fetches insights, follows pagination, and stores each non-null `analysis`
-object unchanged in `devin_sessions.analysis`. Remediation `output`, status, PR,
-and `updated_at` remain unchanged.
-
-Available analyses are saved before generation requests start. The batch size
-matches the generation concurrency limit, so reserved work fits in one request
-wave rather than waiting behind slow requests. For missing analysis, the app
-requests background generation with at most three concurrent requests. It polls
-again after 30 seconds, then 60, 120, 240, and 300 seconds between subsequent
-attempts. `already_exists` can mean generation is still running. Empty responses
-and API errors remain retryable. Sessions with no Devin messages become
-`unavailable`; remotely active sessions are deferred.
-
-The database persists `analysis_status`, `analysis_attempts`,
-`analysis_next_attempt_at`, and `analysis_reason`. Attempts are reserved before
-network calls, so an interrupted process can resume after the stored retry time.
-When the attempt limit is reached, the next due pass marks analysis
-`unavailable` and preserves the last reason. The state applies only to
-collection, not to remediation success or failure.
-
-Insights client calls time out after 10 seconds. The entire collection phase has
-a 15-second budget and logs failures without failing the tick. It uses no
-remediation concurrency slots. Finished remote sessions with pending analysis
-are eligible automatically; sessions that failed before remote creation are
-excluded. Collected analyses are snapshots and are not refreshed automatically.
-
-To retry an unavailable analysis after resolving its cause, reset its collection
-state without changing remediation fields:
-
-```sql
-UPDATE devin_sessions
-SET analysis_status = 'pending',
-    analysis_attempts = 0,
-    analysis_next_attempt_at = '1970-01-01T00:00:00.000Z',
-    analysis_reason = NULL
-WHERE id = '<local-session-record-id>' AND analysis_status = 'unavailable';
-```
-
-## Database schemas and migrations
-
-Drizzle schemas live in `src/schemas.ts`. SQL migrations and Drizzle metadata
-live in `migrations/`. To generate a migration after changing the schemas:
-
-```sh
-deno task db:generate
-```
-
-Review and commit the generated files. Production startup and in-memory tests
-apply the same migrations.
-
-Migration history is squashed into one initial migration for fresh databases.
-Databases created with the old migration history must be recreated or explicitly
-rebaselined before use. Startup does not perform that conversion.
-
-### Effect integration
-
-`DatabaseClient.layer` in `src/database.ts` reads `AppConfig`, opens the
-connection, applies migrations, and closes the connection when its scope ends.
-`createApp` in `src/app.ts` is an Effect requiring `WebhookDeliveryHandler`.
-Routes run request effects with the captured service context.
-
-`WebhookEventProcessors` in `src/webhook-event-processors.ts` is an Effect
-service containing a readonly event-kind map of `WebhookEventProcessor`
-functions. Its production layer registers `issuesProcessor`. Each processor
-receives the persisted `DeliveryRecord` and `DevinClient` service. It returns an
-Effect with a `Skipped` or `SessionCreated` outcome and preserves
-`DevinSubmissionError` classifications. The orchestrator obtains the registry
-with `yield* WebhookEventProcessors` and owns all lifecycle writes. `AppLive`
-provides `WebhookEventProcessors.layer`. Tests can replace the map with
-`Layer.succeed(WebhookEventProcessors, processors)` without another HTTP
-registration or a middleware chain.
-
-Before submitting a matching issue, the processor looks up the exact macro
-`!fix-superset-issue`. If absent, it creates **Fix Superset issue** with the
-configured remediation instructions. Existing playbooks are reused without
-changing their title or body. Session creation includes the resulting
-`playbook_id`. Lookup and creation are serialized within the processor layer;
-session requests remain concurrent. Playbook failures block session creation.
-Transient failures return the job to the normal retry path, not session
-recovery.
-
-`src/index.ts` composes the delivery handler, Devin client, session repository,
-orchestrator, and config provider over one database layer. `runApplication`
-acquires the Hono server and forks `DevinSessionOrchestrator.run` with
-`Effect.forkScoped`. Both use the application's Effect context.
-
-`tick` performs one iteration; `run` repeats it with `Effect.sleep`. Tests
-normally call `tick` with a fake Devin client and a fresh migrated SQLite
-database.
-
-Drizzle ORM and Kit are pinned to `1.0.0-rc.5-5935859` for compatibility with
-Effect `4.0.0-rc.115`. The `effect-sqlite-node` driver needs a `node:sqlite` API
-that this project's Deno version lacks, so the app uses `effect-libsql`. On
-Linux, libSQL's native loader detects glibc through `process.report.getReport`.
-The run and test commands grant `--allow-sys=cpus,networkInterfaces,hostname`
-for that Deno compatibility path.
-
-### Schema decisions
-
-- `delivery_id` is `NOT NULL UNIQUE`: it is the deduplication key and the target
-  of the session's foreign key.
-- Text primary keys explicitly use `NOT NULL`, which SQLite otherwise does not
-  always enforce. Table-level primary key declarations preserve this constraint
-  in Drizzle Kit's generated SQL. The receiver generates separate UUIDs for both
-  rows.
-- SQLite checks enforce the six statuses and nonnegative attempts. Drizzle's
-  text enum alone only constrains TypeScript.
-- Timestamps are UTC ISO strings. Both rows share the insertion time. Every
-  lifecycle update sets `updated_at` using Effect's clock.
-- Unique `github_delivery_id` permits one session per delivery, not per issue.
-  Separate GitHub deliveries for the same issue can queue separate sessions.
-
-Tag recovery uses `claim_version` to fence stale workers,
-`recovery_empty_checks` to require repeated empty lookups, and
-`recovery_blocked` to stop automatic creation after duplicate matches.
-
-## Check
-
-```sh
-deno task check
-deno task test
-```
-
-Tests send signed requests directly to Hono and inspect migrated, in-memory
-SQLite databases. They cover rollback, duplicate deliveries, HMAC failures,
-constraints, and resource cleanup. Orchestrator tests cover transactional
-claims, capacity, overlapping ticks, retries, stale recovery, reconciliation, PR
-parsing, and the create/persist failure boundary. A restart test closes and
-reopens a temporary SQLite file. A loopback HTTP test checks webhook
-responsiveness during submission and application shutdown.
-
-The test task grants filesystem access for temporary SQLite files, FFI for the
-driver, loopback network access, and the driver's `LIBSQL_JS_DEV` environment
-variable. Tests cannot reach the real Devin API and do not call GitHub.
-`deno task check` runs formatting, lint, and TypeScript checks. There is no
-separate JavaScript build step; `docker compose build` also checks the
-entrypoint.
+The default log level is `Info`. Set `LOG_LEVEL=Debug` in the app's environment
+for operation timings, queue capacity, and state transitions. With Docker
+Compose, add `LOG_LEVEL: Debug` to `app.environment` in `compose.yaml`.
