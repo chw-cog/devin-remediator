@@ -31,7 +31,9 @@ const issuePlaybook = {
 3. Reproduce the bug and add a focused regression test. Confirm it fails for the reported defect before the fix and passes afterward.
 4. Fix the root cause using existing patterns. Avoid unrelated refactors, dependency changes, and weakened tests.
 5. Run affected tests and required checks for changed files. For UI bugs, exercise the reported flow in the relevant browser and capture before/after evidence. Distinguish failures from checks you could not run.
-6. Review the diff, then open one PR using the current PR template. Link the issue and include the cause, fix, reproduction, test commands and results, and remaining risks. Return the PR URL and a concise verification summary.
+6. Review the diff and open one PR using the current PR template. Include the issue, root cause, fix, reproduction, and verification evidence.
+7. Monitor CI on the latest PR commit until all required checks pass. Diagnose failures, fix those caused by this change, run relevant local tests, and push to the same PR branch. Repeat after each push. Never weaken checks or fix unrelated failures. If
+ blocked by infrastructure, approvals, or unrelated failures, report the evidence and required action instead of retrying indefinitely. Return the PR URL, final commit, CI results, and remaining risks. Do not claim completion while checks remain pending.
 
 If you cannot establish the bug or verify a safe fix, stop and return the evidence, blocker, and smallest missing input. For suspected security issues, stop public work and direct the requester to contact the repository admins. Do not merge, deploy, or close issues.`,
 } satisfies CreatePlaybookParams;
