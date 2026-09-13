@@ -5,6 +5,7 @@ export type Env = Record<string, string | undefined>;
 export const AppConfig = Config.all({
   devinApiKey: Config.String("DEVIN_API_KEY"),
   devinOrganizationId: Config.String("DEVIN_ORGANIZATION_ID"),
+  githubWebhookSecret: Config.String("GITHUB_WEBHOOK_SECRET"),
 });
 
 export type AppConfig = Config.Success<typeof AppConfig>;

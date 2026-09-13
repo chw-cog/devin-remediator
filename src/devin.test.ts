@@ -7,6 +7,7 @@ import { DevinClient } from "./devin.ts";
 const testEnv = {
   DEVIN_API_KEY: "cog_test-key",
   DEVIN_ORGANIZATION_ID: "org-test",
+  GITHUB_WEBHOOK_SECRET: "test-webhook-secret",
 };
 const session = {
   session_id: "devin-test",
@@ -293,7 +294,11 @@ Deno.test("DevinClient.layer uses config for authentication and organization URL
         );
         return Promise.resolve(Response.json(session));
       },
-      { DEVIN_API_KEY: apiKey, DEVIN_ORGANIZATION_ID: organizationId },
+      {
+        ...testEnv,
+        DEVIN_API_KEY: apiKey,
+        DEVIN_ORGANIZATION_ID: organizationId,
+      },
     );
     assert.deepEqual(result, session);
     assert.equal(calls, 1);

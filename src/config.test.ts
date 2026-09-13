@@ -5,16 +5,22 @@ import { withConfig } from "./config.ts";
 const env = {
   DEVIN_API_KEY: "cog_test-key",
   DEVIN_ORGANIZATION_ID: "org-test",
+  GITHUB_WEBHOOK_SECRET: "test-webhook-secret",
 };
 
-Deno.test("withConfig loads Devin settings from the supplied environment", async () => {
+Deno.test("withConfig loads settings from the supplied environment", async () => {
   for (const key of ["cog_first-key", "cog_second-key"]) {
     const config = await Effect.runPromise(
-      withConfig({ ...env, DEVIN_API_KEY: key }, Effect.succeed),
+      withConfig({
+        ...env,
+        DEVIN_API_KEY: key,
+        GITHUB_WEBHOOK_SECRET: `${key}-webhook-secret`,
+      }, Effect.succeed),
     );
     assert.deepEqual(config, {
       devinApiKey: key,
       devinOrganizationId: "org-test",
+      githubWebhookSecret: `${key}-webhook-secret`,
     });
   }
 });
@@ -27,6 +33,8 @@ Deno.test("withConfig rejects missing or empty settings before calling back", as
       { ...env, DEVIN_API_KEY: "" },
       { ...env, DEVIN_ORGANIZATION_ID: undefined },
       { ...env, DEVIN_ORGANIZATION_ID: "" },
+      { ...env, GITHUB_WEBHOOK_SECRET: undefined },
+      { ...env, GITHUB_WEBHOOK_SECRET: "" },
     ]
   ) {
     let called = false;

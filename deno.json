@@ -4,8 +4,8 @@
     "exclude": [".agents/", ".pi/"]
   },
   "tasks": {
-    "dev": "deno run --allow-net --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID --watch src/index.ts",
-    "start": "deno run --allow-net --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID src/index.ts",
+    "dev": "deno run --allow-net --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET --watch src/index.ts",
+    "start": "deno run --allow-net --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,GITHUB_WEBHOOK_SECRET src/index.ts",
     "check": "deno fmt --check && deno lint && deno check src/*.ts",
     "test": "deno test"
   },

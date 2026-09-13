@@ -1,8 +1,13 @@
-import {
-  createEventHandler,
-  type EmitterWebhookEvent,
-} from "@octokit/webhooks";
+import { type EmitterWebhookEvent, Webhooks } from "@octokit/webhooks";
 import { Context, Effect, Layer, Schema } from "effect";
+import { AppConfig } from "./config.ts";
+
+type WebhookDelivery = {
+  id: string;
+  name: string;
+  payload: string;
+  signature: string;
+};
 
 export class EventHandlerError extends Schema.TaggedError<EventHandlerError>()(
   "EventHandlerError",
@@ -22,13 +27,14 @@ const issuesLabeled = Effect.fn("EventHandler.issuesLabeled")(
 
 export class EventHandler extends Context.Service<EventHandler, {
   readonly receive: (
-    event: EmitterWebhookEvent,
+    event: WebhookDelivery,
   ) => Effect.Effect<void, EventHandlerError>;
 }>()("devin-remediator/EventHandler") {
   static readonly layer = Layer.effect(
     EventHandler,
     Effect.gen(function* () {
-      const webhooks = createEventHandler({});
+      const config = yield* AppConfig;
+      const webhooks = new Webhooks({ secret: config.githubWebhookSecret });
       const runPromise = Effect.runPromiseWith(yield* Effect.context());
 
       webhooks.on(
@@ -37,9 +43,9 @@ export class EventHandler extends Context.Service<EventHandler, {
       );
 
       const receive = Effect.fn("EventHandler.receive")(
-        (event: EmitterWebhookEvent) =>
+        (event: WebhookDelivery) =>
           Effect.tryPromise({
-            try: () => webhooks.receive(event),
+            try: () => webhooks.verifyAndReceive(event),
             catch: (cause) => new EventHandlerError({ cause }),
           }),
       );
