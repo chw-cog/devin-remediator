@@ -1,5 +1,16 @@
 {
+  "nodeModulesDir": "auto",
+  "fmt": {
+    "exclude": [".agents/", ".pi/"]
+  },
+  "tasks": {
+    "dev": "deno run --allow-net --watch src/index.ts",
+    "start": "deno run --allow-net src/index.ts",
+    "check": "deno fmt --check && deno lint && deno check src/*.ts",
+    "test": "deno test"
+  },
   "imports": {
+    "@octokit/webhooks": "npm:@octokit/webhooks@14.2.0",
     "effect": "npm:effect@4.0.0-rc.115",
     "hono": "npm:hono@4.13.7"
   }

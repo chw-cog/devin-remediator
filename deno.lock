@@ -1,10 +1,40 @@
 {
   "version": "5",
   "specifiers": {
+    "npm:@octokit/webhooks@14.2.0": "14.2.0",
     "npm:effect@4.0.0-rc.115": "4.0.0-rc.115",
     "npm:hono@4.13.7": "4.13.7"
   },
   "npm": {
+    "@octokit/openapi-types@29.0.1": {
+      "integrity": "sha512-9qWOMFNxxLokERcms42rU0PTLqQmVs7g5E41TI4mCOxmpFayD1rfC7XxOL55cG9MBZLFlC31BrR37myMKardwg=="
+    },
+    "@octokit/openapi-webhooks-types@12.1.0": {
+      "integrity": "sha512-WiuzhOsiOvb7W3Pvmhf8d2C6qaLHXrWiLBP4nJ/4kydu+wpagV5Fkz9RfQwV2afYzv3PB+3xYgp4mAdNGjDprA=="
+    },
+    "@octokit/request-error@7.1.2": {
+      "integrity": "sha512-XZRuT3xZ84D3gYErI1DZvhJ33dCWVV6uzBtWkaBB4TvA/L6eOeTZodxLFVB44bBEEo3vEx7y00UfX1tBLrtLRg==",
+      "dependencies": [
+        "@octokit/types"
+      ]
+    },
+    "@octokit/types@18.0.0": {
+      "integrity": "sha512-l6bAF43PNxkJp6g+W4PjoUSSkxHomXw2nOum5CTftJz1NlV3vu93NImgOYtLf6CbBUb5j+fiuzW0PPQ5JTSvZA==",
+      "dependencies": [
+        "@octokit/openapi-types"
+      ]
+    },
+    "@octokit/webhooks-methods@6.0.0": {
+      "integrity": "sha512-MFlzzoDJVw/GcbfzVC1RLR36QqkTLUf79vLVO3D+xn7r0QgxnFoLZgtrzxiQErAjFUOdH6fas2KeQJ1yr/qaXQ=="
+    },
+    "@octokit/webhooks@14.2.0": {
+      "integrity": "sha512-da6KbdNCV5sr1/txD896V+6W0iamFWrvVl8cHkBSPT+YlvmT3DwXa4jxZnQc+gnuTEqSWbBeoSZYTayXH9wXcw==",
+      "dependencies": [
+        "@octokit/openapi-webhooks-types",
+        "@octokit/request-error",
+        "@octokit/webhooks-methods"
+      ]
+    },
     "effect@4.0.0-rc.115": {
       "integrity": "sha512-ogYulZ5ffeOzrJqQrG0XOkDO5lKn2s9KNHhoxJy/6wKUkF0i12dlVXWA9TgsgQ+zV/JzizyG0+XMPepZEQX6vw=="
     },
@@ -14,6 +44,7 @@
   },
   "workspace": {
     "dependencies": [
+      "npm:@octokit/webhooks@14.2.0",
       "npm:effect@4.0.0-rc.115",
       "npm:hono@4.13.7"
     ]
