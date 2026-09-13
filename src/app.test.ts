@@ -1,7 +1,13 @@
 import { strict as assert } from "node:assert";
 import app from "./app.ts";
+import type { Env } from "./config.ts";
 
-function deliver(body: string, event = "push", delivery = "test-delivery") {
+function deliver(
+  body: string,
+  event = "push",
+  delivery = "test-delivery",
+  env: Env = { DEVIN_API_KEY: "cog_test-key" },
+) {
   return app.request("/api/v1/webhook", {
     method: "POST",
     headers: {
@@ -10,8 +16,20 @@ function deliver(body: string, event = "push", delivery = "test-delivery") {
       "x-github-delivery": delivery,
     },
     body,
-  });
+  }, env);
 }
+
+Deno.test("missing or empty server config returns 500", async (t) => {
+  for (const env of [{}, { DEVIN_API_KEY: "" }]) {
+    await t.step(JSON.stringify(env), async () => {
+      const response = await deliver("{}", "push", "test-delivery", env);
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), {
+        error: "Invalid server configuration",
+      });
+    });
+  }
+});
 
 Deno.test("supported events return an empty 200", async (t) => {
   const payloads = {

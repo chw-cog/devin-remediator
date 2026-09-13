@@ -4,6 +4,7 @@ import {
 } from "@octokit/webhooks";
 import { Effect, Schema } from "effect";
 import { Hono } from "hono";
+import { type Env, withConfig } from "./config.ts";
 
 const EventName = Schema.Literals([
   "check_run",
@@ -22,7 +23,7 @@ const decodeDelivery = Schema.decodeUnknownEffect(Schema.Struct({
 }));
 
 const webhooks = createEventHandler({});
-const app = new Hono();
+const app = new Hono<{ Bindings: Env }>();
 
 app.post("/api/v1/webhook", (c) =>
   Effect.runPromise(
@@ -37,11 +38,17 @@ app.post("/api/v1/webhook", (c) =>
         payload,
       }).pipe(Effect.mapError(() => "Invalid webhook headers or payload"));
 
+      const _config = yield* withConfig(c.env, Effect.succeed);
+
       // Payload fields use Octokit's types; only the envelope is validated.
       yield* Effect.promise(() => webhooks.receive(delivery as WebhookEvent));
       return c.body(null, 200);
     }).pipe(
-      Effect.catch((error) => Effect.succeed(c.json({ error }, 400))),
+      Effect.catchTag("ConfigError", () =>
+        Effect.succeed(c.json({ error: "Invalid server configuration" }, 500))),
+      Effect.catch((error) =>
+        Effect.succeed(c.json({ error }, 400))
+      ),
     ),
   ));
 
