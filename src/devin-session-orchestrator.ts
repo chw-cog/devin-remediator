@@ -6,16 +6,16 @@ import {
   findPullRequestNumber,
   interpretSession,
 } from "./devin.ts";
-import { deliveryTag } from "./devin_prompt.ts";
 import {
   DevinSessionRepository,
   type RunningSession,
   type SessionWork,
-} from "./devin_session_repository.ts";
+} from "./devin-session-repository.ts";
 import {
-  type WebhookDeliveryOutcome,
-  WebhookDeliveryProcessors,
-} from "./webhook_delivery_processors.ts";
+  deliveryTag,
+  type WebhookEventOutcome,
+  WebhookEventProcessors,
+} from "./webhook-event-processors.ts";
 
 const identifiers = ({ session, delivery }: SessionWork) => ({
   id: session.id,
@@ -38,7 +38,7 @@ export class DevinSessionOrchestrator extends Context.Service<
     Effect.gen(function* () {
       const repository = yield* DevinSessionRepository;
       const client = yield* DevinClient;
-      const processors = yield* WebhookDeliveryProcessors;
+      const processors = yield* WebhookEventProcessors;
       const config = yield* AppConfig;
       const ticks = yield* Semaphore.make(1);
 
@@ -138,7 +138,7 @@ export class DevinSessionOrchestrator extends Context.Service<
           const processor = processors.get(work.delivery.eventName);
           const result = yield* (processor
             ? processor(work.delivery, client)
-            : Effect.succeed<WebhookDeliveryOutcome>({ _tag: "Skipped" }))
+            : Effect.succeed<WebhookEventOutcome>({ _tag: "Skipped" }))
             .pipe(Effect.interruptible, Effect.result);
           if (result._tag === "Failure") {
             const error = result.failure;

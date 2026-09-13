@@ -4,17 +4,17 @@ import { ConfigProvider, Effect, Fiber, Layer, Result } from "effect";
 import { createApp } from "./app.ts";
 import { type AppDatabase, DatabaseClient } from "./database.ts";
 import { DevinClient } from "./devin.ts";
-import { DevinSessionOrchestrator } from "./devin_session_orchestrator.ts";
-import { DevinSessionRepository } from "./devin_session_repository.ts";
-import { WebhookDeliveryHandler } from "./webhook_delivery_handler.ts";
+import { playbook } from "../test/fixtures/playbook.ts";
+import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
+import { DevinSessionRepository } from "./devin-session-repository.ts";
+import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 import { runApplication } from "./index.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 import {
-  issuesProcessor,
-  type WebhookDeliveryOutcome,
-  type WebhookDeliveryProcessor,
-  WebhookDeliveryProcessors,
-} from "./webhook_delivery_processors.ts";
+  type WebhookEventOutcome,
+  type WebhookEventProcessor,
+  WebhookEventProcessors,
+} from "./webhook-event-processors.ts";
 
 Deno.test("Hono serves durable webhooks and health while the scoped orchestrator awaits Devin; shutdown joins it before closing SQLite", async () => {
   const listening = Promise.withResolvers<number>();
@@ -26,11 +26,13 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
     WebhookDeliveryHandler.layer,
     DevinSessionOrchestrator.layer.pipe(
       Layer.provide(DevinSessionRepository.layer),
-      Layer.provide(WebhookDeliveryProcessors.layer),
+      Layer.provide(WebhookEventProcessors.layer),
     ),
   ).pipe(
     Layer.provideMerge(DatabaseClient.layer),
     Layer.provide(Layer.succeed(DevinClient, {
+      createPlaybook: () => Effect.die("Playbook already exists"),
+      findPlaybookByMacro: () => Effect.succeed(playbook),
       createSession: () =>
         Effect.sync(() => {
           creates++;
@@ -125,6 +127,8 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
   const creates: Parameters<DevinClient["Service"]["createSession"]>[0][] = [];
   const gets: string[] = [];
   const client = DevinClient.of({
+    createPlaybook: () => Effect.die("Playbook already exists"),
+    findPlaybookByMacro: () => Effect.succeed(playbook),
     createSession: (request) =>
       Effect.sync(() => {
         creates.push(request);
@@ -148,12 +152,12 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
     listSessions: () => Effect.die("Unexpected listSessions"),
     findSessionsByTag: () => Effect.die("Unexpected tag lookup"),
   });
-  const pullRequestProcessor: WebhookDeliveryProcessor = (delivery, client) =>
+  const pullRequestProcessor: WebhookEventProcessor = (delivery, client) =>
     client.createSession({
       title: `Custom processor for ${delivery.deliveryId}`,
       prompt: delivery.payload,
       repos: [delivery.repo],
-    }).pipe(Effect.map((session): WebhookDeliveryOutcome => ({
+    }).pipe(Effect.map((session): WebhookEventOutcome => ({
       _tag: "SessionCreated",
       devinSessionId: session.session_id,
     })));
@@ -161,13 +165,18 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
     WebhookDeliveryHandler.layer,
     DevinSessionOrchestrator.layer.pipe(
       Layer.provide(DevinSessionRepository.layer),
-      Layer.provide(Layer.succeed(
-        WebhookDeliveryProcessors,
-        new Map([
-          ["issues", issuesProcessor],
-          ["pull_request", pullRequestProcessor],
-        ]),
-      )),
+      Layer.provide(
+        Layer.effect(
+          WebhookEventProcessors,
+          Effect.gen(function* () {
+            const processors = yield* WebhookEventProcessors;
+            return new Map([
+              ...processors,
+              ["pull_request", pullRequestProcessor],
+            ]);
+          }),
+        ).pipe(Layer.provide(WebhookEventProcessors.layer)),
+      ),
     ),
   ).pipe(
     Layer.provideMerge(DatabaseClient.layer),

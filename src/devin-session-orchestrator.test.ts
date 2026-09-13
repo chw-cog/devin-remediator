@@ -11,6 +11,7 @@ import {
   Result,
 } from "effect";
 import { TestClock } from "effect/testing";
+import { playbook } from "../test/fixtures/playbook.ts";
 import { FetchHttpClient } from "effect/unstable/http";
 import { type AppDatabase, DatabaseClient, DatabaseError } from "./database.ts";
 import { type Env } from "./config.ts";
@@ -21,18 +22,18 @@ import {
   DevinSubmissionError,
   type SessionState,
 } from "./devin.ts";
-import { DevinSessionOrchestrator } from "./devin_session_orchestrator.ts";
+import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
 import {
   type DeliveryRecord,
   DevinSessionRepository,
   type SessionRecord,
-} from "./devin_session_repository.ts";
+} from "./devin-session-repository.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 import {
-  type WebhookDeliveryOutcome,
-  type WebhookDeliveryProcessor,
-  WebhookDeliveryProcessors,
-} from "./webhook_delivery_processors.ts";
+  type WebhookEventOutcome,
+  type WebhookEventProcessor,
+  WebhookEventProcessors,
+} from "./webhook-event-processors.ts";
 
 const remote: DevinSession = {
   session_id: "devin-created",
@@ -51,6 +52,11 @@ function fakeClient() {
   const gets: string[] = [];
   const lookups: string[] = [];
   const behavior = {
+    findPlaybook: (): ReturnType<
+      DevinClient["Service"]["findPlaybookByMacro"]
+    > => Effect.succeed(playbook),
+    createPlaybook: (): ReturnType<DevinClient["Service"]["createPlaybook"]> =>
+      Effect.die("Playbook already exists"),
     create: (): ReturnType<DevinClient["Service"]["createSession"]> =>
       Effect.succeed({
         ...remote,
@@ -64,6 +70,8 @@ function fakeClient() {
       Effect.succeed([]),
   };
   const client = DevinClient.of({
+    createPlaybook: () => behavior.createPlaybook(),
+    findPlaybookByMacro: () => behavior.findPlaybook(),
     createSession: (params) =>
       Effect.suspend(() => {
         creates.push(params);
@@ -87,8 +95,8 @@ function fakeClient() {
 function testLayer(
   fake: ReturnType<typeof fakeClient>,
   env: Env = {},
-  processors: Layer.Layer<WebhookDeliveryProcessors> =
-    WebhookDeliveryProcessors.layer,
+  processors: Layer.Layer<WebhookEventProcessors> =
+    WebhookEventProcessors.layer,
 ) {
   return DevinSessionOrchestrator.layer.pipe(
     Layer.provide(processors),
@@ -150,8 +158,8 @@ function orchestrationTest(
     fake: ReturnType<typeof fakeClient>;
   }) => Effect.Effect<void, unknown>,
   env: Env = {},
-  processors: Layer.Layer<WebhookDeliveryProcessors> =
-    WebhookDeliveryProcessors.layer,
+  processors: Layer.Layer<WebhookEventProcessors> =
+    WebhookEventProcessors.layer,
 ) {
   Deno.test(name, () => {
     const fake = fakeClient();
@@ -170,10 +178,19 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
   let posts = 0;
   const pages: string[] = [];
   const fetch: typeof globalThis.fetch = (input, init) => {
+    if (new URL(String(input)).pathname.endsWith("/playbooks")) {
+      assert.equal(init?.method, "GET");
+      return Promise.resolve(Response.json({
+        items: [playbook],
+        has_next_page: false,
+        end_cursor: null,
+      }));
+    }
     if (init?.method === "POST") {
       posts++;
       assert.ok(init.body instanceof Uint8Array);
       const request = JSON.parse(new TextDecoder().decode(init.body));
+      assert.equal(request.playbook_id, "playbook-test");
       assert.deepEqual(request.tags, [
         "delivery-id:delivery-http",
         "issue:123",
@@ -214,7 +231,7 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
     ));
   };
   const layer = DevinSessionOrchestrator.layer.pipe(
-    Layer.provide(WebhookDeliveryProcessors.layer),
+    Layer.provide(WebhookEventProcessors.layer),
     Layer.provideMerge(DevinSessionRepository.layer),
     Layer.provideMerge(DatabaseClient.layer),
     Layer.provide(DevinClient.layer),
@@ -250,6 +267,40 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
   assert.equal(posts, 1);
   assert.deepEqual(pages, ["false:null", "false:next", "true:null"]);
 });
+
+orchestrationTest(
+  "a lost playbook response retries the prerequisite next tick and reuses it without session recovery",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      let exists = false;
+      let playbookPosts = 0;
+      fake.behavior.findPlaybook = () =>
+        Effect.succeed(exists ? playbook : undefined);
+      fake.behavior.createPlaybook = () => {
+        playbookPosts++;
+        exists = true;
+        return Effect.fail(
+          new DevinSubmissionError({
+            disposition: "ambiguous",
+          }),
+        );
+      };
+      yield* seed(db, "playbook");
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "playbook")).status, "pending");
+      assert.equal(fake.creates.length, 0);
+      assert.deepEqual(fake.lookups, []);
+      yield* orchestra.tick;
+      const saved = yield* row(db, "playbook");
+      assert.equal(saved.status, "running");
+      assert.equal(saved.devinSessionId, "devin-created-1");
+      assert.equal(saved.attempts, 2);
+      assert.equal(playbookPosts, 1);
+      assert.equal(fake.creates.length, 1);
+      assert.equal(fake.creates[0].playbook_id, "playbook-test");
+      assert.deepEqual(fake.lookups, []);
+    }),
+);
 
 orchestrationTest(
   "pending work is committed as submitting before POST; repeated ticks do not duplicate it",
@@ -818,7 +869,7 @@ orchestrationTest(
       };
       yield* DevinSessionOrchestrator.use((o) => o.tick).pipe(
         Effect.provide(Layer.fresh(DevinSessionOrchestrator.layer)),
-        Effect.provide(WebhookDeliveryProcessors.layer),
+        Effect.provide(WebhookEventProcessors.layer),
         Effect.provideService(DevinSessionRepository, repo),
         Effect.provideService(DevinClient, fake.client),
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
@@ -1067,7 +1118,7 @@ orchestrationTest(
       assert.deepEqual(fake.gets, []);
     }),
   {},
-  Layer.succeed(WebhookDeliveryProcessors, new Map()),
+  Layer.succeed(WebhookEventProcessors, new Map()),
 );
 
 orchestrationTest(
@@ -1109,12 +1160,12 @@ orchestrationTest(
     }),
 );
 
-const pullRequestProcessor: WebhookDeliveryProcessor = (delivery, client) =>
+const pullRequestProcessor: WebhookEventProcessor = (delivery, client) =>
   client.createSession({
     title: `Custom processor for ${delivery.deliveryId}`,
     prompt: delivery.payload,
     repos: [delivery.repo],
-  }).pipe(Effect.map((session): WebhookDeliveryOutcome => ({
+  }).pipe(Effect.map((session): WebhookEventOutcome => ({
     _tag: "SessionCreated",
     devinSessionId: session.session_id,
   })));
@@ -1142,7 +1193,7 @@ orchestrationTest(
     }),
   {},
   Layer.succeed(
-    WebhookDeliveryProcessors,
+    WebhookEventProcessors,
     new Map([
       ["pull_request", pullRequestProcessor],
       ["unused", () => Effect.die("Registry must select only one processor")],

@@ -10,6 +10,7 @@ import {
 } from "./devin.ts";
 import type { Schema } from "effect";
 import type { HttpClientError } from "effect/unstable/http";
+import { playbook } from "../test/fixtures/playbook.ts";
 
 const testEnv = {
   DEVIN_API_KEY: "cog_test-key",
@@ -52,6 +53,7 @@ Deno.test("createSession posts authenticated JSON and returns the session", asyn
     repos: ["owner/repo"],
     tags: ["remediation"],
     max_acu_limit: 5,
+    playbook_id: "playbook-test",
     structured_output_schema: {
       type: "object",
       properties: { fixed: { type: "boolean" } },
@@ -83,6 +85,188 @@ Deno.test("createSession posts authenticated JSON and returns the session", asyn
   assert.equal(calls, 1);
   assert.deepEqual(result, session);
 });
+
+Deno.test("createPlaybook posts the documented authenticated v3 request and decodes the playbook", async () => {
+  const params = {
+    title: "fix-superset-issue",
+    body: "Fix the issue.\nVerify the change.",
+    macro: "!fix-superset-issue",
+    structured_output_schema: { type: "object" },
+  };
+  const expected = { ...playbook, ...params };
+  let calls = 0;
+  const result = await runWithFetch(
+    Effect.flatMap(DevinClient, (client) => client.createPlaybook(params)),
+    (input, init) => {
+      calls++;
+      assert.equal(
+        String(input),
+        "https://api.devin.ai/v3/organizations/org-test/playbooks",
+      );
+      assert.equal(init?.method, "POST");
+      const headers = new Headers(init.headers);
+      assert.equal(headers.get("authorization"), "Bearer cog_test-key");
+      assert.equal(headers.get("content-type"), "application/json");
+      assert.equal(headers.get("accept"), "application/json");
+      assert.ok(init.body instanceof Uint8Array);
+      assert.deepEqual(JSON.parse(new TextDecoder().decode(init.body)), params);
+      return Promise.resolve(Response.json(expected));
+    },
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(result, expected);
+});
+
+Deno.test("createPlaybook rejects a macro without the required ! before HTTP", async () => {
+  const result = await runWithFetch(
+    Effect.flatMap(DevinClient, (client) =>
+      client.createPlaybook({
+        title: "Fix issue",
+        body: "Fix",
+        macro: "fix-superset-issue",
+      }).pipe(Effect.result)),
+    () => {
+      throw new Error("Invalid macro must not reach HTTP");
+    },
+  );
+  assert.ok(Result.isFailure(result));
+  assert.equal(result.failure.disposition, "permanent");
+});
+
+for (
+  const [status, disposition] of [
+    [403, "permanent"],
+    [409, "permanent"],
+    [422, "permanent"],
+    [429, "retryable"],
+    [503, "ambiguous"],
+  ] as const
+) {
+  Deno.test(`createPlaybook preserves HTTP ${status} without retrying POST`, async () => {
+    let calls = 0;
+    const result = await runWithFetch(
+      Effect.flatMap(
+        DevinClient,
+        (client) =>
+          client.createPlaybook({ title: "Fix", body: "Fix" }).pipe(
+            Effect.result,
+          ),
+      ),
+      () => {
+        calls++;
+        return Promise.resolve(new Response("", { status }));
+      },
+    );
+    assert.equal(calls, 1);
+    assert.ok(Result.isFailure(result));
+    assert.equal(result.failure.httpStatus, status);
+    assert.equal(result.failure.disposition, disposition);
+  });
+}
+
+Deno.test("createPlaybook rejects a malformed successful response", async () => {
+  const result = await runWithFetch(
+    Effect.flatMap(
+      DevinClient,
+      (client) =>
+        client.createPlaybook({ title: "Fix", body: "Fix" }).pipe(
+          Effect.result,
+        ),
+    ),
+    () => Promise.resolve(Response.json({ ...playbook, playbook_id: "" })),
+  );
+  assert.ok(Result.isFailure(result));
+  assert.equal(result.failure.disposition, "ambiguous");
+});
+
+Deno.test("findPlaybookByMacro follows cursors and matches the exact macro rather than title", async () => {
+  const cursors: (string | null)[] = [];
+  const result = await runWithFetch(
+    Effect.flatMap(
+      DevinClient,
+      (client) => client.findPlaybookByMacro("!fix-superset-issue"),
+    ),
+    (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(
+        url.origin + url.pathname,
+        "https://api.devin.ai/v3/organizations/org-test/playbooks",
+      );
+      assert.equal(init?.method, "GET");
+      assert.equal(
+        new Headers(init.headers).get("authorization"),
+        "Bearer cog_test-key",
+      );
+      assert.equal(url.searchParams.get("first"), "200");
+      assert.equal(url.searchParams.has("macro"), false);
+      cursors.push(url.searchParams.get("after"));
+      return Promise.resolve(Response.json(
+        cursors.length === 1
+          ? {
+            items: [{
+              ...playbook,
+              title: "fix-superset-issue",
+              macro: "!fix-superset-issue-other",
+            }],
+            has_next_page: true,
+            end_cursor: "next?/&",
+          }
+          : { items: [playbook], has_next_page: false, end_cursor: null },
+      ));
+    },
+  );
+  assert.deepEqual(cursors, [null, "next?/&"]);
+  assert.deepEqual(result, playbook);
+});
+
+Deno.test("findPlaybookByMacro returns absent when the documented optional pagination fields are omitted", async () => {
+  const result = await runWithFetch(
+    Effect.flatMap(
+      DevinClient,
+      (client) => client.findPlaybookByMacro("!fix-superset-issue"),
+    ),
+    () => Promise.resolve(Response.json({ items: [] })),
+  );
+  assert.equal(result, undefined);
+});
+
+for (
+  const [name, page] of [
+    ["missing cursor", { items: [], has_next_page: true }],
+    ["null cursor", { items: [], has_next_page: true, end_cursor: null }],
+    ["repeated cursor", { items: [], has_next_page: true, end_cursor: "loop" }],
+    ["malformed page", { items: null }],
+    ["invalid playbook", { items: [{ ...playbook, macro: 42 }] }],
+    ["duplicate macro", {
+      items: [playbook, { ...playbook, playbook_id: "another-playbook" }],
+    }],
+  ]
+) {
+  Deno.test(`findPlaybookByMacro fails closed on ${name}`, async () => {
+    let calls = 0;
+    const result = await runWithFetch(
+      Effect.flatMap(
+        DevinClient,
+        (client) =>
+          client.findPlaybookByMacro("!fix-superset-issue").pipe(Effect.result),
+      ),
+      () => {
+        calls++;
+        assert.ok(calls <= 2);
+        return Promise.resolve(Response.json(page));
+      },
+    );
+    assert.ok(Result.isFailure(result));
+    assert.equal(
+      result.failure.disposition,
+      name === "duplicate macro"
+        ? "permanent"
+        : name === "malformed page" || name === "invalid playbook"
+        ? "ambiguous"
+        : "retryable",
+    );
+  });
+}
 
 Deno.test("listSessions filters by IDs and returns session details", async () => {
   const ids = ["devin-test", "devin-?/&second"];

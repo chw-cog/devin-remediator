@@ -45,6 +45,33 @@ export const CreateSessionParams = Schema.Struct({
 
 export type CreateSessionParams = typeof CreateSessionParams.Type;
 
+export const CreatePlaybookParams = Schema.Struct({
+  title: Schema.String,
+  body: Schema.String,
+  macro: Schema.optional(Schema.NullOr(
+    Schema.String.check(Schema.isPattern(/^![A-Za-z0-9_-]+$/)),
+  )),
+  structured_output_schema: Schema.optional(Schema.NullOr(Schema.JsonObject)),
+});
+
+export type CreatePlaybookParams = typeof CreatePlaybookParams.Type;
+
+export const DevinPlaybook = Schema.Struct({
+  playbook_id: Schema.NonEmptyString,
+  title: Schema.String,
+  body: Schema.String,
+  macro: Schema.NullOr(Schema.String),
+  created_by: Schema.String,
+  updated_by: Schema.String,
+  created_at: Schema.Int,
+  updated_at: Schema.Int,
+  access_type: Schema.Literals(["enterprise", "org"]),
+  org_id: Schema.NullOr(Schema.String),
+  structured_output_schema: Schema.optional(Schema.NullOr(Schema.JsonObject)),
+});
+
+export type DevinPlaybook = typeof DevinPlaybook.Type;
+
 export const DevinSession = Schema.Struct({
   session_id: Schema.NonEmptyString,
   url: Schema.String,
@@ -199,6 +226,12 @@ const RecoverySessionPage = Schema.Struct({
   end_cursor: Schema.NullOr(Schema.NonEmptyString),
 });
 
+const PlaybookPage = Schema.Struct({
+  items: Schema.Array(DevinPlaybook),
+  has_next_page: Schema.optional(Schema.Boolean),
+  end_cursor: Schema.optional(Schema.NullOr(Schema.NonEmptyString)),
+});
+
 export class DevinLookupError extends Schema.TaggedError<DevinLookupError>()(
   "DevinLookupError",
   { cause: Schema.Defect() },
@@ -210,8 +243,19 @@ const decodeSessionIds = Schema.decodeUnknownEffect(
   Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(200)),
 );
 const encodeSessionBody = HttpClientRequest.schemaBodyJson(CreateSessionParams);
+const encodePlaybookBody = HttpClientRequest.schemaBodyJson(
+  CreatePlaybookParams,
+);
 
 export class DevinClient extends Context.Service<DevinClient, {
+  readonly createPlaybook: (params: CreatePlaybookParams) => Effect.Effect<
+    DevinPlaybook,
+    DevinSubmissionError
+  >;
+  readonly findPlaybookByMacro: (macro: string) => Effect.Effect<
+    DevinPlaybook | undefined,
+    DevinSubmissionError
+  >;
   readonly createSession: (params: CreateSessionParams) => Effect.Effect<
     DevinSession,
     DevinSubmissionError
@@ -243,6 +287,59 @@ export class DevinClient extends Context.Service<DevinClient, {
           HttpClientRequest.acceptJson,
         )),
         HttpClient.filterStatusOk,
+      );
+
+      const createPlaybook = Effect.fn("DevinClient.createPlaybook")(
+        (params: CreatePlaybookParams) =>
+          encodePlaybookBody(HttpClientRequest.post("/playbooks"), params).pipe(
+            Effect.flatMap(client.execute),
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinPlaybook)),
+            Effect.timeout("30 seconds"),
+            Effect.mapError(submissionError),
+          ),
+      );
+
+      const findPlaybookByMacro = Effect.fn("DevinClient.findPlaybookByMacro")(
+        function* (macro: string) {
+          let match: DevinPlaybook | undefined;
+          let after: string | undefined;
+          const cursors = new Set<string>();
+          do {
+            const page = yield* client.get("/playbooks", {
+              urlParams: {
+                first: 200,
+                ...(after === undefined ? {} : { after }),
+              },
+            }).pipe(
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(PlaybookPage)),
+              Effect.mapError(submissionError),
+            );
+            for (const playbook of page.items) {
+              if (playbook.macro !== macro) continue;
+              if (match && match.playbook_id !== playbook.playbook_id) {
+                return yield* new DevinSubmissionError({
+                  disposition: "permanent",
+                });
+              }
+              match = playbook;
+            }
+            if (!page.has_next_page) break;
+            if (page.end_cursor == null || cursors.has(page.end_cursor)) {
+              return yield* new DevinSubmissionError({
+                disposition: "retryable",
+              });
+            }
+            after = page.end_cursor;
+            cursors.add(after);
+          } while (true);
+          return match;
+        },
+        Effect.timeout("30 seconds"),
+        Effect.catchTag(
+          "TimeoutError",
+          () =>
+            Effect.fail(new DevinSubmissionError({ disposition: "retryable" })),
+        ),
       );
 
       const createSession = Effect.fn("DevinClient.createSession")(
@@ -322,6 +419,8 @@ export class DevinClient extends Context.Service<DevinClient, {
       );
 
       return DevinClient.of({
+        createPlaybook,
+        findPlaybookByMacro,
         createSession,
         getSession,
         listSessions,

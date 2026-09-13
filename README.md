@@ -99,7 +99,9 @@ prevent startup.
 `DEVIN_API_KEY` and `DEVIN_ORGANIZATION_ID` configure the existing Devin v3
 organization API client. Create, get, and complete tag lookups time out after 30
 seconds. The API key must permit session creation, inspection, and
-`ViewOrgSessions` listing in that organization.
+`ViewOrgSessions` listing in that organization. Creating the issue playbook also
+requires `ManageOrgPlaybooks` (`org.playbooks.manage`); looking it up requires
+`UseDevinSessions` (`org.devins.use`).
 
 See [orchestration behavior and limitations](docs/orchestration.md) for the
 state transitions, retry policy, and remote-creation ambiguity.
@@ -123,16 +125,28 @@ connection, applies migrations, and closes the connection when its scope ends.
 `createApp` in `src/app.ts` is an Effect requiring `WebhookDeliveryHandler`.
 Routes run request effects with the captured service context.
 
-`WebhookDeliveryProcessors` in `src/webhook_delivery_processors.ts` is an Effect
-service containing a readonly event-kind map of `WebhookDeliveryProcessor`
+`WebhookEventProcessors` in `src/webhook-event-processors.ts` is an Effect
+service containing a readonly event-kind map of `WebhookEventProcessor`
 functions. Its production layer registers `issuesProcessor`. Each processor
 receives the persisted `DeliveryRecord` and `DevinClient` service. It returns an
 Effect with a `Skipped` or `SessionCreated` outcome and preserves
 `DevinSubmissionError` classifications. The orchestrator obtains the registry
-with `yield* WebhookDeliveryProcessors` and owns all lifecycle writes. `AppLive`
-provides `WebhookDeliveryProcessors.layer`. Tests can replace the map with
-`Layer.succeed(WebhookDeliveryProcessors, processors)` without another HTTP
+with `yield* WebhookEventProcessors` and owns all lifecycle writes. `AppLive`
+provides `WebhookEventProcessors.layer`. Tests can replace the map with
+`Layer.succeed(WebhookEventProcessors, processors)` without another HTTP
 registration or a middleware chain.
+
+Before submitting a matching issue, the processor looks up the exact macro
+`!fix-superset-issue`. If absent, it creates **Fix Superset issue** with the
+configured remediation instructions. Existing playbooks are reused without
+changing their title or body. Session creation includes the resulting
+`playbook_id`. Lookup and creation are serialized within the processor layer;
+session requests remain concurrent. Playbook failures block session creation.
+Transient failures return the job to the normal retry path, not session
+recovery.
+
+See [the playbook API notes](docs/devin-playbook-api.md) for endpoint contracts
+and limits on cross-process deduplication.
 
 `src/index.ts` composes the delivery handler, Devin client, session repository,
 orchestrator, and config provider over one database layer. `runApplication`

@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { Hono } from "hono";
-import { WebhookDeliveryHandler } from "./webhook_delivery_handler.ts";
+import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 
 const decodeDelivery = Schema.decodeUnknownEffect(Schema.Struct({
   id: Schema.NonEmptyString,

@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
 import { createApp } from "./app.ts";
 import { DatabaseClient } from "./database.ts";
-import { WebhookDeliveryHandler } from "./webhook_delivery_handler.ts";
+import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 const testEnv = {

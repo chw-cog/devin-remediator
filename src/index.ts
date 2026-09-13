@@ -3,17 +3,17 @@ import { ConfigProvider, Effect, Layer } from "effect";
 import { createApp } from "./app.ts";
 import { DatabaseClient } from "./database.ts";
 import { DevinClient } from "./devin.ts";
-import { DevinSessionOrchestrator } from "./devin_session_orchestrator.ts";
-import { DevinSessionRepository } from "./devin_session_repository.ts";
-import { WebhookDeliveryHandler } from "./webhook_delivery_handler.ts";
-import { WebhookDeliveryProcessors } from "./webhook_delivery_processors.ts";
+import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
+import { DevinSessionRepository } from "./devin-session-repository.ts";
+import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
+import { WebhookEventProcessors } from "./webhook-event-processors.ts";
 
 export const AppLive = Layer.merge(
   WebhookDeliveryHandler.layer,
   DevinSessionOrchestrator.layer.pipe(
     Layer.provide(DevinSessionRepository.layer),
     Layer.provide(DevinClient.layer),
-    Layer.provide(WebhookDeliveryProcessors.layer),
+    Layer.provide(WebhookEventProcessors.layer),
   ),
 ).pipe(Layer.provide(DatabaseClient.layer));
 

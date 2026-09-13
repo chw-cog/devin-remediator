@@ -5,7 +5,7 @@ import { DatabaseClient } from "./database.ts";
 import {
   WebhookDeliveryHandler,
   WebhookDeliveryHandlerError,
-} from "./webhook_delivery_handler.ts";
+} from "./webhook-delivery-handler.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 const testEnv = {
