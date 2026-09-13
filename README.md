@@ -56,13 +56,12 @@ not Devin availability or queue progress. It makes no database or Devin calls.
 
 `POST /api/v1/webhook` accepts a JSON object with these headers:
 
-- `X-GitHub-Event`: `check_run`, `dependabot_alert`, `issues`, `label`, or
-  `push`.
+- `X-GitHub-Event`: a nonempty event name.
 - `X-GitHub-Delivery`: a nonempty delivery ID.
 - `X-Hub-Signature-256`: GitHub's HMAC-SHA256 signature of the raw request body.
 
 Accepted deliveries return an empty `200`. Malformed JSON, non-object payloads,
-missing headers, and unsupported events return `400`.
+and missing or empty required headers return `400`.
 
 Each payload must include a nonempty `repository.full_name`. If `issue` is
 present, `issue.number` must be a positive integer.
@@ -77,8 +76,13 @@ errors roll back both inserts and return a generic `500`. Invalid signatures and
 invalid repository or issue metadata also return a generic `500`. Missing or
 empty required server configuration prevents startup.
 
-All supported events queue a session, not only `issues.labeled`. The receiver
-does not call Devin. The orchestrator reads the committed work independently.
+All accepted events queue a local job. The receiver does not call Devin. The
+orchestrator reads the committed work independently and selects one processor by
+event name. The default issues processor creates a session only when `action` is
+`labeled` and the added `label.name` is exactly `devin`. Other issues deliveries
+and events without a processor become terminal `skipped`. Existing labels in
+`issue.labels` do not affect this decision. Different delivery IDs for the same
+issue can create separate sessions.
 
 ## Orchestrator configuration
 
@@ -115,10 +119,21 @@ apply the same migrations.
 
 `DatabaseClient.layer` in `src/database.ts` reads `AppConfig`, opens the
 connection, applies migrations, and closes the connection when its scope ends.
-`createApp` in `src/app.ts` is an Effect requiring `EventHandler`. Routes run
-request effects with the captured service context.
+`createApp` in `src/app.ts` is an Effect requiring `WebhookDeliveryHandler`.
+Routes run request effects with the captured service context.
 
-`src/index.ts` composes the event handler, Devin client, session repository,
+`WebhookDeliveryProcessors` in `src/webhook_delivery_processors.ts` is an Effect
+service containing a readonly event-kind map of `WebhookDeliveryProcessor`
+functions. Its production layer registers `issuesProcessor`. Each processor
+receives the persisted `DeliveryRecord` and `DevinClient` service. It returns an
+Effect with a `Skipped` or `SessionCreated` outcome and preserves
+`DevinSubmissionError` classifications. The orchestrator obtains the registry
+with `yield* WebhookDeliveryProcessors` and owns all lifecycle writes. `AppLive`
+provides `WebhookDeliveryProcessors.layer`. Tests can replace the map with
+`Layer.succeed(WebhookDeliveryProcessors, processors)` without another HTTP
+registration or a middleware chain.
+
+`src/index.ts` composes the delivery handler, Devin client, session repository,
 orchestrator, and config provider over one database layer. `runApplication`
 acquires the Hono server and forks `DevinSessionOrchestrator.run` with
 `Effect.forkScoped`. Both use the application's Effect context.

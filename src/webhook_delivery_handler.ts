@@ -11,10 +11,11 @@ type WebhookDelivery = {
   signature: string;
 };
 
-export class EventHandlerError extends Schema.TaggedError<EventHandlerError>()(
-  "EventHandlerError",
-  { cause: Schema.Defect() },
-) {}
+export class WebhookDeliveryHandlerError
+  extends Schema.TaggedError<WebhookDeliveryHandlerError>()(
+    "WebhookDeliveryHandlerError",
+    { cause: Schema.Defect() },
+  ) {}
 
 const decodePayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({
@@ -25,32 +26,35 @@ const decodePayload = Schema.decodeUnknownEffect(
   })),
 );
 
-export class EventHandler extends Context.Service<EventHandler, {
-  readonly receive: (
-    event: WebhookDelivery,
-  ) => Effect.Effect<void, EventHandlerError>;
-}>()("devin-remediator/EventHandler") {
+export class WebhookDeliveryHandler
+  extends Context.Service<WebhookDeliveryHandler, {
+    readonly receive: (
+      event: WebhookDelivery,
+    ) => Effect.Effect<void, WebhookDeliveryHandlerError>;
+  }>()("devin-remediator/WebhookDeliveryHandler") {
   static readonly layer = Layer.effect(
-    EventHandler,
+    WebhookDeliveryHandler,
     Effect.gen(function* () {
       const config = yield* AppConfig;
       const { db } = yield* DatabaseClient;
       const webhooks = new Webhooks({ secret: config.githubWebhookSecret });
 
-      const receive = Effect.fn("EventHandler.receive")(
+      const receive = Effect.fn("WebhookDeliveryHandler.receive")(
         function* (event: WebhookDelivery) {
           const verified = yield* Effect.tryPromise({
             try: () => webhooks.verify(event.payload, event.signature),
-            catch: (cause) => new EventHandlerError({ cause }),
+            catch: (cause) => new WebhookDeliveryHandlerError({ cause }),
           });
           if (!verified) {
-            return yield* new EventHandlerError({
+            return yield* new WebhookDeliveryHandlerError({
               cause: new Error("Invalid webhook signature"),
             });
           }
 
           const payload = yield* decodePayload(event.payload).pipe(
-            Effect.mapError((cause) => new EventHandlerError({ cause })),
+            Effect.mapError((cause) =>
+              new WebhookDeliveryHandlerError({ cause })
+            ),
           );
           const insertedAt = DateTime.formatIso(yield* DateTime.now);
 
@@ -80,11 +84,15 @@ export class EventHandler extends Context.Service<EventHandler, {
                 updatedAt: insertedAt,
               }).run();
             })
-          ).pipe(Effect.mapError((cause) => new EventHandlerError({ cause })));
+          ).pipe(
+            Effect.mapError((cause) =>
+              new WebhookDeliveryHandlerError({ cause })
+            ),
+          );
         },
       );
 
-      return EventHandler.of({ receive });
+      return WebhookDeliveryHandler.of({ receive });
     }),
   );
 }

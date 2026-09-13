@@ -20,10 +20,16 @@ import {
 } from "./devin.ts";
 import { DevinSessionOrchestrator } from "./devin_session_orchestrator.ts";
 import {
+  type DeliveryRecord,
   DevinSessionRepository,
   type SessionRecord,
 } from "./devin_session_repository.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
+import {
+  type WebhookDeliveryOutcome,
+  type WebhookDeliveryProcessor,
+  WebhookDeliveryProcessors,
+} from "./webhook_delivery_processors.ts";
 
 const remote: DevinSession = {
   session_id: "devin-created",
@@ -65,8 +71,14 @@ function fakeClient() {
   return { creates, gets, behavior, client };
 }
 
-function testLayer(fake: ReturnType<typeof fakeClient>, env: Env = {}) {
+function testLayer(
+  fake: ReturnType<typeof fakeClient>,
+  env: Env = {},
+  processors: Layer.Layer<WebhookDeliveryProcessors> =
+    WebhookDeliveryProcessors.layer,
+) {
   return DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(processors),
     Layer.provideMerge(DevinSessionRepository.layer),
     Layer.provideMerge(DatabaseClient.layer),
     Layer.provide(Layer.succeed(DevinClient, fake.client)),
@@ -84,6 +96,7 @@ const seed = Effect.fnUntraced(function* (
   db: AppDatabase,
   id: string,
   overrides: Partial<SessionRecord> = {},
+  deliveryOverrides: Partial<DeliveryRecord> = {},
 ) {
   const now = DateTime.formatIso(yield* DateTime.now);
   yield* db.insert(githubWebhookDeliveries).values({
@@ -92,8 +105,10 @@ const seed = Effect.fnUntraced(function* (
     eventName: "issues",
     repo: "owner/repo",
     issueNumber: 123,
-    payload: '{"issue":{"number":123,"title":"Fix this"}}',
+    payload:
+      '{"action":"labeled","label":{"name":"devin"},"issue":{"number":123,"title":"Fix this"}}',
     insertedAt: now,
+    ...deliveryOverrides,
   });
   yield* db.insert(devinSessions).values({
     id,
@@ -122,6 +137,8 @@ function orchestrationTest(
     fake: ReturnType<typeof fakeClient>;
   }) => Effect.Effect<void, unknown>,
   env: Env = {},
+  processors: Layer.Layer<WebhookDeliveryProcessors> =
+    WebhookDeliveryProcessors.layer,
 ) {
   Deno.test(name, () => {
     const fake = fakeClient();
@@ -131,7 +148,7 @@ function orchestrationTest(
         const repository = yield* DevinSessionRepository;
         const orchestra = yield* DevinSessionOrchestrator;
         yield* test({ db, repository, orchestra, fake });
-      }).pipe(Effect.provide(testLayer(fake, env)), Effect.scoped),
+      }).pipe(Effect.provide(testLayer(fake, env, processors)), Effect.scoped),
     );
   });
 }
@@ -440,6 +457,8 @@ orchestrationTest(
         true,
       );
       assert.equal((yield* row(db, "one")).devinSessionId, "new-remote");
+      assert.equal(yield* repository.markSkipped(current.session), false);
+      assert.equal((yield* row(db, "one")).status, "running");
     }),
 );
 
@@ -499,6 +518,7 @@ orchestrationTest(
       };
       yield* DevinSessionOrchestrator.use((o) => o.tick).pipe(
         Effect.provide(Layer.fresh(DevinSessionOrchestrator.layer)),
+        Effect.provide(WebhookDeliveryProcessors.layer),
         Effect.provideService(DevinSessionRepository, repo),
         Effect.provideService(DevinClient, fake.client),
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
@@ -576,4 +596,162 @@ orchestrationTest(
         assert.equal(fake.gets.length, 0);
       }).pipe(Effect.provide(TestClock.layer()), Effect.scoped);
     }),
+);
+
+for (
+  const { name, eventName, payload } of [
+    {
+      name: "differently cased label",
+      eventName: "issues",
+      payload: '{"action":"labeled","label":{"name":"Devin"}}',
+    },
+    {
+      name: "unrelated added label despite existing devin label",
+      eventName: "issues",
+      payload:
+        '{"action":"labeled","label":{"name":"bug"},"issue":{"labels":[{"name":"devin"}]}}',
+    },
+    {
+      name: "non-labeled action",
+      eventName: "issues",
+      payload: '{"action":"opened","label":{"name":"devin"}}',
+    },
+    {
+      name: "missing added label",
+      eventName: "issues",
+      payload: '{"action":"labeled"}',
+    },
+    {
+      name: "unhandled event",
+      eventName: "push",
+      payload: '{"action":"labeled","label":{"name":"devin"}}',
+    },
+    {
+      name: "object prototype name is not a processor",
+      eventName: "toString",
+      payload: '{"action":"labeled","label":{"name":"devin"}}',
+    },
+  ]
+) {
+  orchestrationTest(
+    `${name} is terminal skipped and excluded from retries and polling`,
+    ({ db, repository, orchestra, fake }) =>
+      Effect.gen(function* () {
+        yield* seed(db, "skip", {}, { eventName, payload });
+        yield* orchestra.tick;
+        const skipped = yield* row(db, "skip");
+        assert.equal(skipped.status, "skipped");
+        assert.equal(skipped.attempts, 1);
+        assert.equal(skipped.devinSessionId, null);
+        assert.equal(skipped.prNumber, null);
+        yield* db.update(devinSessions).set({
+          updatedAt: "2000-01-01T00:00:00.000Z",
+        });
+        const before = yield* row(db, "skip");
+        assert.deepEqual(yield* repository.recoverStale, []);
+        assert.deepEqual(yield* repository.findRunning, []);
+        assert.deepEqual(yield* repository.claimPending, []);
+        yield* orchestra.tick;
+        yield* orchestra.tick;
+        assert.deepEqual(yield* row(db, "skip"), before);
+        assert.deepEqual(fake.creates, []);
+        assert.deepEqual(fake.gets, []);
+      }),
+  );
+}
+
+orchestrationTest(
+  "a missing issues processor skips even a matching delivery",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      yield* seed(db, "unregistered");
+      yield* orchestra.tick;
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "unregistered")).status, "skipped");
+      assert.deepEqual(fake.creates, []);
+      assert.deepEqual(fake.gets, []);
+    }),
+  {},
+  Layer.succeed(WebhookDeliveryProcessors, new Map()),
+);
+
+orchestrationTest(
+  "only the current unassigned claim can become skipped",
+  ({ db, repository }) =>
+    Effect.gen(function* () {
+      yield* seed(db, "one");
+      const [old] = yield* repository.claimPending;
+      yield* db.update(devinSessions).set({
+        updatedAt: "2000-01-01T00:00:00.000Z",
+      });
+      yield* repository.recoverStale;
+      const [current] = yield* repository.claimPending;
+      assert.equal(current.session.attempts, 2);
+      assert.equal(yield* repository.markSkipped(old.session), false);
+      assert.equal((yield* row(db, "one")).status, "submitting");
+      assert.equal(yield* repository.markSkipped(current.session), true);
+      const skipped = yield* row(db, "one");
+      assert.equal(skipped.status, "skipped");
+      assert.equal(skipped.attempts, 2);
+      assert.equal(skipped.devinSessionId, null);
+      assert.equal(yield* repository.markSkipped(current.session), false);
+      assert.equal(
+        yield* repository.markRunning(current.session, "late-remote"),
+        false,
+      );
+      assert.deepEqual(
+        yield* repository.rejectSubmission(current.session, true),
+        [],
+      );
+      assert.deepEqual(yield* row(db, "one"), skipped);
+      yield* seed(db, "assigned", {
+        status: "submitting",
+        attempts: 1,
+        devinSessionId: "existing-remote",
+      });
+      const assigned = yield* row(db, "assigned");
+      assert.equal(yield* repository.markSkipped(assigned), false);
+      assert.deepEqual(yield* row(db, "assigned"), assigned);
+    }),
+);
+
+const pullRequestProcessor: WebhookDeliveryProcessor = (delivery, client) =>
+  client.createSession({
+    title: `Custom processor for ${delivery.deliveryId}`,
+    prompt: delivery.payload,
+    repos: [delivery.repo],
+  }).pipe(Effect.map((session): WebhookDeliveryOutcome => ({
+    _tag: "SessionCreated",
+    devinSessionId: session.session_id,
+  })));
+
+orchestrationTest(
+  "a registered event processor receives the persisted delivery and client and its outcome is persisted",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      const payload = '{"custom":"pull request payload"}';
+      yield* seed(db, "custom", {}, { eventName: "pull_request", payload });
+      yield* orchestra.tick;
+      assert.deepEqual(fake.creates, [{
+        title: "Custom processor for delivery-custom",
+        prompt: payload,
+        repos: ["owner/repo"],
+      }]);
+      assert.equal((yield* row(db, "custom")).status, "running");
+      assert.equal(
+        (yield* row(db, "custom")).devinSessionId,
+        "devin-created-1",
+      );
+      yield* orchestra.tick;
+      assert.equal(fake.creates.length, 1);
+      assert.deepEqual(fake.gets, ["devin-created-1"]);
+    }),
+  {},
+  Layer.succeed(
+    WebhookDeliveryProcessors,
+    new Map([
+      ["pull_request", pullRequestProcessor],
+      ["unused", () => Effect.die("Registry must select only one processor")],
+    ]),
+  ),
 );

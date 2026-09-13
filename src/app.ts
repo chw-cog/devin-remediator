@@ -1,24 +1,16 @@
 import { Effect, Schema } from "effect";
 import { Hono } from "hono";
-import { EventHandler } from "./event_handler.ts";
-
-const EventName = Schema.Literals([
-  "check_run",
-  "dependabot_alert",
-  "issues",
-  "label",
-  "push",
-]);
+import { WebhookDeliveryHandler } from "./webhook_delivery_handler.ts";
 
 const decodeDelivery = Schema.decodeUnknownEffect(Schema.Struct({
   id: Schema.NonEmptyString,
-  name: EventName,
+  name: Schema.NonEmptyString,
   payload: Schema.Record(Schema.String, Schema.Unknown),
   signature: Schema.NonEmptyString,
 }));
 
 export const createApp = Effect.gen(function* () {
-  const handler = yield* EventHandler;
+  const handler = yield* WebhookDeliveryHandler;
   const runPromise = Effect.runPromiseWith(yield* Effect.context());
   const app = new Hono();
 
@@ -48,7 +40,7 @@ export const createApp = Effect.gen(function* () {
 
         return c.body(null, 200);
       }).pipe(
-        Effect.catchTag("EventHandlerError", () =>
+        Effect.catchTag("WebhookDeliveryHandlerError", () =>
           Effect.succeed(c.json({ error: "Webhook handling failed" }, 500))),
         Effect.catch((error) =>
           Effect.succeed(c.json({ error }, 400))

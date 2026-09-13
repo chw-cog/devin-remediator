@@ -53,6 +53,9 @@ export class DevinSessionRepository extends Context.Service<
       claim: SessionRecord,
       devinSessionId: string,
     ) => Effect.Effect<boolean, DatabaseError>;
+    readonly markSkipped: (
+      claim: SessionRecord,
+    ) => Effect.Effect<boolean, DatabaseError>;
     readonly rejectSubmission: (
       claim: SessionRecord,
       retryable: boolean,
@@ -171,6 +174,17 @@ export class DevinSessionRepository extends Context.Service<
         Effect.mapError(databaseError),
       );
 
+      const markSkipped = Effect.fn("DevinSessionRepository.markSkipped")(
+        function* (claim: SessionRecord) {
+          const rows = yield* db.update(devinSessions).set({
+            status: "skipped",
+            updatedAt: yield* nowIso,
+          }).where(ownsClaim(claim)).returning({ id: devinSessions.id });
+          return rows.length === 1;
+        },
+        Effect.mapError(databaseError),
+      );
+
       const rejectSubmission = Effect.fn(
         "DevinSessionRepository.rejectSubmission",
       )(
@@ -210,6 +224,7 @@ export class DevinSessionRepository extends Context.Service<
         recoverStale,
         findRunning,
         markRunning,
+        markSkipped,
         rejectSubmission,
         finish,
       });

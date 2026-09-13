@@ -2,12 +2,15 @@ import { Cause, Context, Effect, Layer, Schedule, Semaphore } from "effect";
 import { AppConfig } from "./config.ts";
 import { type DatabaseError } from "./database.ts";
 import { DevinClient, findPullRequestNumber } from "./devin.ts";
-import { buildSessionRequest } from "./devin_prompt.ts";
 import {
   DevinSessionRepository,
   type RunningSession,
   type SessionWork,
 } from "./devin_session_repository.ts";
+import {
+  type WebhookDeliveryOutcome,
+  WebhookDeliveryProcessors,
+} from "./webhook_delivery_processors.ts";
 
 const identifiers = ({ session, delivery }: SessionWork) => ({
   id: session.id,
@@ -30,6 +33,7 @@ export class DevinSessionOrchestrator extends Context.Service<
     Effect.gen(function* () {
       const repository = yield* DevinSessionRepository;
       const client = yield* DevinClient;
+      const processors = yield* WebhookDeliveryProcessors;
       const config = yield* AppConfig;
       const ticks = yield* Semaphore.make(1);
 
@@ -61,10 +65,10 @@ export class DevinSessionOrchestrator extends Context.Service<
       const submit = Effect.fn("DevinSessionOrchestrator.submit")(
         function* (work: SessionWork) {
           yield* Effect.logInfo("claimed Devin session record");
-          yield* Effect.logInfo("submitting session to Devin");
-          const result = yield* client.createSession(
-            buildSessionRequest(work.delivery),
-          )
+          const processor = processors.get(work.delivery.eventName);
+          const result = yield* (processor
+            ? processor(work.delivery, client)
+            : Effect.succeed<WebhookDeliveryOutcome>({ _tag: "Skipped" }))
             .pipe(Effect.interruptible, Effect.result);
           if (result._tag === "Failure") {
             const error = result.failure;
@@ -88,8 +92,16 @@ export class DevinSessionOrchestrator extends Context.Service<
             return;
           }
 
+          if (result.success._tag === "Skipped") {
+            const skipped = yield* repository.markSkipped(work.session);
+            if (skipped) {
+              yield* Effect.logInfo("webhook delivery skipped");
+            }
+            return;
+          }
+
           // Retry only SQLite here. The remote POST is outside this retry boundary.
-          const remoteId = result.success.session_id;
+          const remoteId = result.success.devinSessionId;
           const saved = yield* repository.markRunning(work.session, remoteId)
             .pipe(
               Effect.retry({
@@ -112,7 +124,8 @@ export class DevinSessionOrchestrator extends Context.Service<
             );
         },
         Effect.uninterruptible,
-        (effect, work) => effect.pipe(Effect.annotateLogs(identifiers(work))),
+        (effect, work) =>
+          effect.pipe(Effect.annotateLogs(identifiers(work))),
       );
 
       const tick = Effect.gen(function* () {

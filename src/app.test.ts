@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
 import { createApp } from "./app.ts";
 import { DatabaseClient } from "./database.ts";
-import { EventHandler } from "./event_handler.ts";
+import { WebhookDeliveryHandler } from "./webhook_delivery_handler.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 const testEnv = {
@@ -30,7 +30,7 @@ function setup(app: Effect.Success<typeof createApp>) {
       delivery = "test-delivery",
       signature = sign(body),
     }: {
-      event?: string;
+      event?: string | null;
       delivery?: string;
       signature?: string | null;
     } = {},
@@ -39,7 +39,7 @@ function setup(app: Effect.Success<typeof createApp>) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-github-event": event,
+        ...(event === null ? {} : { "x-github-event": event }),
         "x-github-delivery": delivery,
         ...(signature === null ? {} : { "x-hub-signature-256": signature }),
       },
@@ -54,7 +54,7 @@ function databaseTest(
     fixture: DatabaseClient["Service"] & ReturnType<typeof setup>,
   ) => Promise<void>,
 ) {
-  const TestLive = EventHandler.layer.pipe(
+  const TestLive = WebhookDeliveryHandler.layer.pipe(
     Layer.provideMerge(DatabaseClient.layer),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(testEnv))),
   );
@@ -82,7 +82,7 @@ databaseTest(
       ]
     ) {
       const result = await Effect.runPromise(createApp.pipe(
-        Effect.provide(EventHandler.layer),
+        Effect.provide(WebhookDeliveryHandler.layer),
         Effect.provideService(DatabaseClient, { db }),
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
         Effect.result,
@@ -203,7 +203,7 @@ databaseTest(
         ["null", {}],
         ["[]", {}],
         ['"push"', {}],
-        [pushBody, { event: "pull_request" }],
+        [pushBody, { event: null }],
         [pushBody, { event: "" }],
         [pushBody, { delivery: "" }],
         [pushBody, { signature: null }],
@@ -323,7 +323,7 @@ databaseTest(
   async ({ db }) => {
     const env = { ...testEnv, GITHUB_WEBHOOK_SECRET: "another-webhook-secret" };
     const app = await Effect.runPromise(createApp.pipe(
-      Effect.provide(EventHandler.layer),
+      Effect.provide(WebhookDeliveryHandler.layer),
       Effect.provideService(DatabaseClient, { db }),
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
     ));

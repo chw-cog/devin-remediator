@@ -27,7 +27,14 @@ export const devinSessions = sqliteTable("devin_sessions", {
     () => githubWebhookDeliveries.deliveryId,
   ),
   status: text("status", {
-    enum: ["pending", "submitting", "running", "succeeded", "failed"],
+    enum: [
+      "pending",
+      "submitting",
+      "running",
+      "succeeded",
+      "failed",
+      "skipped",
+    ],
   }).notNull(),
   devinSessionId: text("devin_session_id").unique(),
   prNumber: integer("pr_number"),
@@ -38,7 +45,7 @@ export const devinSessions = sqliteTable("devin_sessions", {
   primaryKey({ columns: [table.id] }),
   check(
     "devin_sessions_status_check",
-    sql`${table.status} IN ('pending', 'submitting', 'running', 'succeeded', 'failed')`,
+    sql`${table.status} IN ('pending', 'submitting', 'running', 'succeeded', 'failed', 'skipped')`,
   ),
   check("devin_sessions_attempts_check", sql`${table.attempts} >= 0`),
 ]);

@@ -38,14 +38,18 @@ tick, so a rejected row cannot be retried repeatedly within that tick.
 | ---------------------- | ---------------------------------------------------------------------------------- |
 | `pending → submitting` | A capacity-limited claim commits; increment `attempts`                             |
 | `submitting → running` | Create succeeds and SQLite saves `devin_session_id`                                |
+| `submitting → skipped` | No processor is registered for the event kind, or its processor returns `Skipped`  |
 | `submitting → pending` | A retryable rejection below the attempt limit, or a stale claim below that limit   |
 | `submitting → failed`  | A permanent rejection, exhausted rejection, or exhausted stale claim               |
 | `pending → failed`     | Attempts already meet the configured limit, including after a configuration change |
 | `running → succeeded`  | Devin reports task completion                                                      |
 | `running → failed`     | Devin reports a terminal failure                                                   |
 
-Every transition updates `updated_at`. Terminal rows are neither submitted nor
-polled again. A pending row with an existing remote ID is not claimable.
+Every transition updates `updated_at`. Terminal rows, including `skipped`, are
+neither submitted nor polled again. Skipped rows retain their local job and
+delivery without a remote session ID. The skip write requires the same claim
+ownership as a submission write. A pending row with an existing remote ID is not
+claimable.
 
 ## Reconciliation and PR numbers
 
@@ -132,5 +136,7 @@ monitoring.
 Run exactly one app instance. Multiple instances are not a supported deployment:
 although transactional claims protect local capacity, stale recovery does not
 have a distributed ownership protocol. Waiting-for-user sessions can retain a
-slot indefinitely, and all currently supported GitHub event types still queue
-work. There is no additional event-action filter or remote cancellation policy.
+slot indefinitely. All valid deliveries queue local work, but the default issues
+processor creates a remote session only for `action: "labeled"` with the added
+`label.name` exactly `devin`. Other deliveries become `skipped` after a
+capacity-limited claim. There is no remote cancellation policy.

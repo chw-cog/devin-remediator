@@ -5,13 +5,15 @@ import { DatabaseClient } from "./database.ts";
 import { DevinClient } from "./devin.ts";
 import { DevinSessionOrchestrator } from "./devin_session_orchestrator.ts";
 import { DevinSessionRepository } from "./devin_session_repository.ts";
-import { EventHandler } from "./event_handler.ts";
+import { WebhookDeliveryHandler } from "./webhook_delivery_handler.ts";
+import { WebhookDeliveryProcessors } from "./webhook_delivery_processors.ts";
 
 export const AppLive = Layer.merge(
-  EventHandler.layer,
+  WebhookDeliveryHandler.layer,
   DevinSessionOrchestrator.layer.pipe(
     Layer.provide(DevinSessionRepository.layer),
     Layer.provide(DevinClient.layer),
+    Layer.provide(WebhookDeliveryProcessors.layer),
   ),
 ).pipe(Layer.provide(DatabaseClient.layer));
 
