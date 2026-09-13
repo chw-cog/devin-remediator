@@ -1,0 +1,10 @@
+[tools]
+"npm:smee-client" = "5.0.0"
+
+[tasks.webhook]
+description = "Forward a Smee channel to the local server"
+usage = '''
+flag "-u --url <url>" required=#true help="Smee channel URL"
+flag "-p --port <port>" default="8000" help="Local HTTP server port"
+'''
+run = 'smee -u "${usage_url?}" -p "${usage_port?}"'
