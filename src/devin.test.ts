@@ -1,9 +1,13 @@
 import { strict as assert } from "node:assert";
-import { Effect, Result } from "effect";
+import { ConfigProvider, Effect, Result } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
+import type { Env } from "./config.ts";
 import { DevinClient } from "./devin.ts";
 
-const client = new DevinClient("cog_test-key", "org-test");
+const testEnv = {
+  DEVIN_API_KEY: "cog_test-key",
+  DEVIN_ORGANIZATION_ID: "org-test",
+};
 const session = {
   session_id: "devin-test",
   url: "https://app.devin.ai/sessions/test",
@@ -17,11 +21,19 @@ const session = {
 };
 
 function runWithFetch<A, E>(
-  effect: Effect.Effect<A, E>,
+  effect: Effect.Effect<A, E, DevinClient>,
   fetch: typeof globalThis.fetch,
+  env: Env = testEnv,
 ) {
   return Effect.runPromise(
-    effect.pipe(Effect.provideService(FetchHttpClient.Fetch, fetch)),
+    effect.pipe(
+      Effect.provide(DevinClient.layer),
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown(env),
+      ),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    ),
   );
 }
 
@@ -39,7 +51,10 @@ Deno.test("createSession posts authenticated JSON and returns the session", asyn
   };
   let calls = 0;
   const result = await runWithFetch(
-    client.createSession(params),
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      return yield* client.createSession(params);
+    }),
     (input, init) => {
       calls++;
       assert.equal(
@@ -76,27 +91,33 @@ Deno.test("listSessions filters by IDs and returns session details", async () =>
     },
     { ...session, session_id: ids[1], title: null },
   ];
-  const result = await runWithFetch(client.listSessions(ids), (input, init) => {
-    const url = new URL(String(input));
-    assert.equal(
-      url.origin + url.pathname,
-      "https://api.devin.ai/v3/organizations/org-test/sessions",
-    );
-    assert.deepEqual(url.searchParams.getAll("session_ids"), ids);
-    assert.equal(url.searchParams.get("first"), "200");
-    assert.equal(init?.method, "GET");
-    assert.equal(init?.body, undefined);
-    assert.equal(
-      new Headers(init?.headers).get("authorization"),
-      "Bearer cog_test-key",
-    );
-    return Promise.resolve(Response.json({
-      items: sessions,
-      has_next_page: false,
-      end_cursor: null,
-      total: 2,
-    }));
-  });
+  const result = await runWithFetch(
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      return yield* client.listSessions(ids);
+    }),
+    (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(
+        url.origin + url.pathname,
+        "https://api.devin.ai/v3/organizations/org-test/sessions",
+      );
+      assert.deepEqual(url.searchParams.getAll("session_ids"), ids);
+      assert.equal(url.searchParams.get("first"), "200");
+      assert.equal(init?.method, "GET");
+      assert.equal(init?.body, undefined);
+      assert.equal(
+        new Headers(init?.headers).get("authorization"),
+        "Bearer cog_test-key",
+      );
+      return Promise.resolve(Response.json({
+        items: sessions,
+        has_next_page: false,
+        end_cursor: null,
+        total: 2,
+      }));
+    },
+  );
   assert.deepEqual(result, sessions);
 });
 
@@ -104,23 +125,35 @@ Deno.test("listSessions accepts 200 IDs without truncating or splitting", async 
   const ids = Array.from({ length: 200 }, (_, i) => `devin-${i}`);
   const sessions = ids.map((session_id) => ({ ...session, session_id }));
   let calls = 0;
-  const result = await runWithFetch(client.listSessions(ids), (input) => {
-    calls++;
-    assert.equal(new URL(String(input)).searchParams.get("first"), "200");
-    assert.deepEqual(
-      new URL(String(input)).searchParams.getAll("session_ids"),
-      ids,
-    );
-    return Promise.resolve(Response.json({ items: sessions }));
-  });
+  const result = await runWithFetch(
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      return yield* client.listSessions(ids);
+    }),
+    (input) => {
+      calls++;
+      assert.equal(new URL(String(input)).searchParams.get("first"), "200");
+      assert.deepEqual(
+        new URL(String(input)).searchParams.getAll("session_ids"),
+        ids,
+      );
+      return Promise.resolve(Response.json({ items: sessions }));
+    },
+  );
   assert.equal(calls, 1);
   assert.deepEqual(result, sessions);
 });
 
 Deno.test("listSessions with no IDs returns an empty array without HTTP", async () => {
-  const result = await runWithFetch(client.listSessions([]), () => {
-    assert.fail("An empty filter must not fetch every session");
-  });
+  const result = await runWithFetch(
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      return yield* client.listSessions([]);
+    }),
+    () => {
+      assert.fail("An empty filter must not fetch every session");
+    },
+  );
   assert.deepEqual(result, []);
 });
 
@@ -131,7 +164,10 @@ Deno.test("listSessions rejects over 200 IDs and empty IDs without HTTP", async 
     await t.step(`${ids.length} IDs`, async () => {
       let calls = 0;
       const result = await runWithFetch(
-        Effect.result(client.listSessions(ids)),
+        Effect.gen(function* () {
+          const client = yield* DevinClient;
+          return yield* Effect.result(client.listSessions(ids));
+        }),
         () => {
           calls++;
           return Promise.resolve(Response.json({ items: [] }));
@@ -148,8 +184,20 @@ Deno.test("both methods surface HTTP failures without retrying", async (t) => {
   for (const status of [401, 403, 404, 422, 429, 500]) {
     for (
       const [name, effect] of [
-        ["create", Effect.asVoid(client.createSession({ prompt: "Fix CI" }))],
-        ["list", Effect.asVoid(client.listSessions(["devin-test"]))],
+        [
+          "create",
+          Effect.gen(function* () {
+            const client = yield* DevinClient;
+            yield* client.createSession({ prompt: "Fix CI" });
+          }),
+        ],
+        [
+          "list",
+          Effect.gen(function* () {
+            const client = yield* DevinClient;
+            yield* client.listSessions(["devin-test"]);
+          }),
+        ],
       ] as const
     ) {
       await t.step(`${name} ${status}`, async () => {
@@ -196,7 +244,12 @@ Deno.test("invalid JSON, invalid session data, and network errors fail", async (
   ) {
     await t.step(name, async () => {
       const result = await runWithFetch(
-        Effect.result(client.createSession({ prompt: "Fix CI" })),
+        Effect.gen(function* () {
+          const client = yield* DevinClient;
+          return yield* Effect.result(
+            client.createSession({ prompt: "Fix CI" }),
+          );
+        }),
         fetch,
       );
       assert.ok(Result.isFailure(result));
@@ -204,9 +257,73 @@ Deno.test("invalid JSON, invalid session data, and network errors fail", async (
     });
   }
   const result = await runWithFetch(
-    Effect.result(client.listSessions(["devin-test"])),
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      return yield* Effect.result(client.listSessions(["devin-test"]));
+    }),
     () => Promise.resolve(Response.json({ items: [null] })),
   );
   assert.ok(Result.isFailure(result));
   assert.equal(result.failure._tag, "SchemaError");
+});
+
+Deno.test("DevinClient.layer uses config for authentication and organization URLs", async () => {
+  for (
+    const [apiKey, organizationId, encodedId] of [
+      ["cog_first-key", "org-first", "org-first"],
+      ["cog_second-key", "org/with ?#", "org%2Fwith%20%3F%23"],
+    ]
+  ) {
+    let calls = 0;
+    const result = await runWithFetch(
+      Effect.gen(function* () {
+        const client = yield* DevinClient;
+        assert.equal(yield* DevinClient, client);
+        return yield* client.createSession({ prompt: "Fix CI" });
+      }),
+      (input, init) => {
+        calls++;
+        assert.equal(
+          String(input),
+          `https://api.devin.ai/v3/organizations/${encodedId}/sessions`,
+        );
+        assert.equal(
+          new Headers(init?.headers).get("authorization"),
+          `Bearer ${apiKey}`,
+        );
+        return Promise.resolve(Response.json(session));
+      },
+      { DEVIN_API_KEY: apiKey, DEVIN_ORGANIZATION_ID: organizationId },
+    );
+    assert.deepEqual(result, session);
+    assert.equal(calls, 1);
+  }
+});
+
+Deno.test("DevinClient.layer rejects missing config before running the consumer", async () => {
+  for (
+    const env of [
+      { ...testEnv, DEVIN_API_KEY: undefined },
+      { ...testEnv, DEVIN_ORGANIZATION_ID: undefined },
+    ]
+  ) {
+    let ran = false;
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* DevinClient;
+        ran = true;
+        return yield* client.listSessions([]);
+      }).pipe(
+        Effect.provide(DevinClient.layer),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown(env),
+        ),
+        Effect.result,
+      ),
+    );
+    assert.ok(Result.isFailure(result));
+    assert.equal(result.failure._tag, "ConfigError");
+    assert.equal(ran, false);
+  }
 });

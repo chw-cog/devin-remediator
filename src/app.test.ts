@@ -2,11 +2,16 @@ import { strict as assert } from "node:assert";
 import app from "./app.ts";
 import type { Env } from "./config.ts";
 
+const testEnv = {
+  DEVIN_API_KEY: "cog_test-key",
+  DEVIN_ORGANIZATION_ID: "org-test",
+};
+
 function deliver(
   body: string,
   event = "push",
   delivery = "test-delivery",
-  env: Env = { DEVIN_API_KEY: "cog_test-key" },
+  env: Env = testEnv,
 ) {
   return app.request("/api/v1/webhook", {
     method: "POST",
@@ -20,7 +25,14 @@ function deliver(
 }
 
 Deno.test("missing or empty server config returns 500", async (t) => {
-  for (const env of [{}, { DEVIN_API_KEY: "" }]) {
+  for (
+    const env of [
+      {},
+      { ...testEnv, DEVIN_API_KEY: "" },
+      { ...testEnv, DEVIN_ORGANIZATION_ID: undefined },
+      { ...testEnv, DEVIN_ORGANIZATION_ID: "" },
+    ]
+  ) {
     await t.step(JSON.stringify(env), async () => {
       const response = await deliver("{}", "push", "test-delivery", env);
       assert.equal(response.status, 500);

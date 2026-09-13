@@ -1,10 +1,13 @@
-import { Effect, flow, Schema } from "effect";
+import { Context, Effect, flow, Layer, Schema } from "effect";
 import {
   FetchHttpClient,
+  type HttpBody,
   HttpClient,
+  type HttpClientError,
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/unstable/http";
+import { AppConfig } from "./config.ts";
 
 const DevinMode = Schema.Literals([
   "normal",
@@ -111,52 +114,57 @@ const decodeSessionIds = Schema.decodeUnknownEffect(
 );
 const encodeSessionBody = HttpClientRequest.schemaBodyJson(CreateSessionParams);
 
-export class DevinClient {
-  readonly #client: Effect.Effect<HttpClient.HttpClient>;
+export class DevinClient extends Context.Service<DevinClient, {
+  readonly createSession: (params: CreateSessionParams) => Effect.Effect<
+    DevinSession,
+    | HttpBody.HttpBodyError
+    | HttpClientError.HttpClientError
+    | Schema.SchemaError
+  >;
+  readonly listSessions: (session_ids: ReadonlyArray<string>) => Effect.Effect<
+    ReadonlyArray<DevinSession>,
+    HttpClientError.HttpClientError | Schema.SchemaError
+  >;
+}>()("devin-remediator/DevinClient") {
+  static readonly layer = Layer.effect(
+    DevinClient,
+    Effect.gen(function* () {
+      const config = yield* AppConfig;
+      const baseUrl = `https://api.devin.ai/v3/organizations/${
+        encodeURIComponent(config.devinOrganizationId)
+      }`;
+      const client = (yield* HttpClient.HttpClient).pipe(
+        HttpClient.mapRequest(flow(
+          HttpClientRequest.prependUrl(baseUrl),
+          HttpClientRequest.bearerToken(config.devinApiKey),
+          HttpClientRequest.acceptJson,
+        )),
+        HttpClient.filterStatusOk,
+      );
 
-  constructor(api_key: string, organization_id: string) {
-    const baseUrl = `https://api.devin.ai/v3/organizations/${
-      encodeURIComponent(organization_id)
-    }`;
-    this.#client = HttpClient.HttpClient.pipe(
-      Effect.map((client) =>
-        client.pipe(
-          HttpClient.mapRequest(flow(
-            HttpClientRequest.prependUrl(baseUrl),
-            HttpClientRequest.bearerToken(api_key),
-            HttpClientRequest.acceptJson,
-          )),
-          HttpClient.filterStatusOk,
-        )
-      ),
-      Effect.provide(FetchHttpClient.layer),
-    );
-  }
+      const createSession = Effect.fn("DevinClient.createSession")(
+        (params: CreateSessionParams) =>
+          encodeSessionBody(HttpClientRequest.post("/sessions"), params).pipe(
+            Effect.flatMap(client.execute),
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
+          ),
+      );
 
-  readonly #execute = (request: HttpClientRequest.HttpClientRequest) =>
-    this.#client.pipe(Effect.flatMap((client) => client.execute(request)));
+      const listSessions = Effect.fn("DevinClient.listSessions")(
+        (session_ids: ReadonlyArray<string>) =>
+          decodeSessionIds(session_ids).pipe(
+            Effect.flatMap((ids) =>
+              ids.length === 0 ? Effect.succeed([]) : client.get("/sessions", {
+                urlParams: { session_ids: ids, first: 200 },
+              }).pipe(
+                Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionPage)),
+                Effect.map((page) => page.items),
+              )
+            ),
+          ),
+      );
 
-  readonly createSession = Effect.fn("DevinClient.createSession")(
-    (params: CreateSessionParams) =>
-      encodeSessionBody(HttpClientRequest.post("/sessions"), params).pipe(
-        Effect.flatMap(this.#execute),
-        Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
-      ),
-  );
-
-  readonly listSessions = Effect.fn("DevinClient.listSessions")(
-    (session_ids: ReadonlyArray<string>) =>
-      decodeSessionIds(session_ids).pipe(
-        Effect.flatMap((ids) =>
-          ids.length === 0
-            ? Effect.succeed([])
-            : this.#execute(HttpClientRequest.get("/sessions", {
-              urlParams: { session_ids: ids, first: 200 },
-            })).pipe(
-              Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionPage)),
-              Effect.map((page) => page.items),
-            )
-        ),
-      ),
-  );
+      return DevinClient.of({ createSession, listSessions });
+    }),
+  ).pipe(Layer.provide(FetchHttpClient.layer));
 }
