@@ -44,6 +44,30 @@ In your GitHub repository's webhook settings, use that URL, select
 above. For a public deployment, use `https://<your-host>/api/v1/webhook`
 instead. Add the `devin` label to an issue to trigger remediation.
 
+### Set the session budget
+
+Each new issue-remediation session sends `max_acu_limit: 10` by default. To
+choose another per-session ACU budget, set `DEVIN_MAX_SESSION_BUDGET` in the
+application environment before starting the app. For example:
+
+```sh
+export DEVIN_MAX_SESSION_BUDGET=20
+```
+
+Use a positive integer. An omitted or empty value uses `10`; zero, negative,
+fractional, and nonnumeric values fail configuration loading. This is our
+conservative, adjustable default, not Devin's API default or a guarantee of
+completion time. It may be tight for Enterprise workloads.
+
+For a custom Docker Compose setup, explicitly forward the variable in
+`app.environment`, for example
+`DEVIN_MAX_SESSION_BUDGET: ${DEVIN_MAX_SESSION_BUDGET:-10}`. A value in your
+shell or `.env` alone does not add it to the container environment. Recreate the
+app container after changing its environment. This setting does not change the
+budget of an existing session. See
+[session budget rationale](docs/devin-session-budget.md) for the provider
+guidance and limits of this choice.
+
 ## Enable issue attention comments with a GitHub App
 
 1. Create a GitHub App with repository **Issues** permission set to **Read and

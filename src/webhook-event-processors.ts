@@ -5,6 +5,7 @@ import {
   DevinSubmissionError,
 } from "./devin.ts";
 import type { DeliveryRecord } from "./devin-session-repository.ts";
+import { AppConfig } from "./config.ts";
 import { observe } from "./logging.ts";
 import { remediationOutputSchema } from "./remediation-output.ts";
 
@@ -52,6 +53,7 @@ export class WebhookEventProcessors extends Context.Service<
   static readonly layer = Layer.effect(
     WebhookEventProcessors,
     Effect.gen(function* () {
+      const config = yield* AppConfig;
       const playbookLock = yield* Semaphore.make(1);
       const ensureIssuePlaybook = Effect.fn("ensureIssuePlaybook")(
         function* (client: DevinClient["Service"]) {
@@ -120,6 +122,7 @@ export class WebhookEventProcessors extends Context.Service<
           );
           const session = yield* client.createSession({
             playbook_id: playbook.playbook_id,
+            max_acu_limit: config.devinMaxSessionBudget,
             structured_output_required: true,
             structured_output_schema: remediationOutputSchema,
             title: `GitHub ${delivery.eventName}: ${delivery.repo}`,

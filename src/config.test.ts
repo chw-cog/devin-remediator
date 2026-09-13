@@ -22,6 +22,7 @@ Deno.test("AppConfig loads settings from the supplied config layer", async () =>
     assert.deepEqual(config, {
       devinApiKey: key,
       devinOrganizationId: "org-test",
+      devinMaxSessionBudget: 10,
       devinMaxConcurrentSessions: 3,
       devinMaxAttempts: 3,
       devinAnalysisMaxAttempts: 12,
@@ -70,6 +71,39 @@ Deno.test("GitHub App config is optional, rejects partial or invalid credentials
     }
   }
 });
+
+for (
+  const [value, expected] of [
+    [undefined, 10],
+    ["", 10],
+    ["1", 1],
+    ["27", 27],
+  ] as const
+) {
+  Deno.test(`session budget ${JSON.stringify(value) ?? "omitted"} resolves to ${expected} ACUs`, async () => {
+    const config = await Effect.runPromise(AppConfig.pipe(
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+        ...env,
+        DEVIN_MAX_SESSION_BUDGET: value,
+      }))),
+    ));
+    assert.equal(config.devinMaxSessionBudget, expected);
+  });
+}
+
+for (const value of ["0", "-1", "1.5", "NaN", "Infinity", "invalid"]) {
+  Deno.test(`session budget rejects ${JSON.stringify(value)}`, async () => {
+    const result = await Effect.runPromise(AppConfig.pipe(
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+        ...env,
+        DEVIN_MAX_SESSION_BUDGET: value,
+      }))),
+      Effect.result,
+    ));
+    assert.ok(Result.isFailure(result));
+    assert.equal(result.failure._tag, "ConfigError");
+  });
+}
 
 Deno.test("orchestrator settings accept positive integers and reject invalid values", async () => {
   for (

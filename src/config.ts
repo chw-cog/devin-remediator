@@ -46,6 +46,7 @@ const positiveInt = (name: string, fallback: number) =>
 export const AppConfig = Config.all({
   devinApiKey: Config.String("DEVIN_API_KEY"),
   devinOrganizationId: Config.String("DEVIN_ORGANIZATION_ID"),
+  devinMaxSessionBudget: positiveInt("DEVIN_MAX_SESSION_BUDGET", 10),
   devinMaxConcurrentSessions: positiveInt("DEVIN_MAX_CONCURRENT_SESSIONS", 3),
   devinMaxAttempts: positiveInt("DEVIN_MAX_ATTEMPTS", 3),
   devinAnalysisMaxAttempts: positiveInt("DEVIN_ANALYSIS_MAX_ATTEMPTS", 12),

@@ -137,8 +137,7 @@ function fakeClient() {
 function testLayer(
   fake: ReturnType<typeof fakeClient>,
   env: Env = {},
-  processors: Layer.Layer<WebhookEventProcessors> =
-    WebhookEventProcessors.layer,
+  processors = WebhookEventProcessors.layer,
 ) {
   return DevinSessionOrchestrator.layer.pipe(
     Layer.provide(processors),
@@ -200,8 +199,7 @@ function orchestrationTest(
     fake: ReturnType<typeof fakeClient>;
   }) => Effect.Effect<void, unknown>,
   env: Env = {},
-  processors: Layer.Layer<WebhookEventProcessors> =
-    WebhookEventProcessors.layer,
+  processors = WebhookEventProcessors.layer,
 ) {
   Deno.test(name, () => {
     const fake = fakeClient();

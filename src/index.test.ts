@@ -379,7 +379,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
   );
 });
 
-Deno.test("production environment forwarding honors retained polling and analysis bounds", async () => {
+Deno.test("production environment forwarding honors session budget, retained polling, and analysis bounds", async () => {
   const env = applicationEnvironment((name) =>
     ({
       DEVIN_API_KEY: "test",
@@ -388,6 +388,7 @@ Deno.test("production environment forwarding honors retained polling and analysi
       ...githubAppEnv,
       DEVIN_RETAINED_POLL_INTERVAL_MS: "12345",
       DEVIN_ANALYSIS_MAX_ATTEMPTS: "7",
+      DEVIN_MAX_SESSION_BUDGET: "27",
     } as Record<string, string>)[name]
   );
   const config = await Effect.runPromise(
@@ -399,6 +400,7 @@ Deno.test("production environment forwarding honors retained polling and analysi
   assert.equal(config.githubApp?.installationId, 202);
   assert.equal(config.devinRetainedPollIntervalMs, 12345);
   assert.equal(config.devinAnalysisMaxAttempts, 7);
+  assert.equal(config.devinMaxSessionBudget, 27);
   for (const entry of ["start", "dev"]) {
     const tasks = JSON.parse(
       await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
@@ -406,22 +408,23 @@ Deno.test("production environment forwarding honors retained polling and analysi
     assert.ok(tasks[entry].includes("DEVIN_RETAINED_POLL_INTERVAL_MS"));
     assert.ok(tasks[entry].includes("DEVIN_ANALYSIS_MAX_ATTEMPTS"));
     const allowed = new Set(
-      tasks[entry].match(/--allow-env=([^ ]+)/)[1].split(","),
+      tasks[entry].match(/--allow-env=([^\s]+)/)?.[1].split(","),
     );
     for (const name of Object.keys(githubAppEnv)) assert.ok(allowed.has(name));
+    assert.ok(allowed.has("DEVIN_MAX_SESSION_BUDGET"));
     assert.equal(allowed.has("GITHUB_TOKEN"), false);
   }
-  const docker = await Deno.readTextFile(
+  const dockerfile = await Deno.readTextFile(
     new URL("../Dockerfile", import.meta.url),
   );
-  const args: string[] = JSON.parse(
-    docker.split("\n").find((line) => line.startsWith("CMD "))!.slice(4),
-  );
+  const dockerCommand = dockerfile.match(/^CMD (\[.*\])$/m)?.[1];
+  assert.ok(dockerCommand);
+  const dockerArgs: string[] = JSON.parse(dockerCommand);
   const allowed = new Set(
-    args.find((arg) => arg.startsWith("--allow-env="))!.slice(
-      "--allow-env=".length,
-    ).split(","),
+    dockerArgs.find((arg) => arg.startsWith("--allow-env="))
+      ?.slice("--allow-env=".length).split(","),
   );
   for (const name of Object.keys(githubAppEnv)) assert.ok(allowed.has(name));
+  assert.ok(allowed.has("DEVIN_MAX_SESSION_BUDGET"));
   assert.equal(allowed.has("GITHUB_TOKEN"), false);
 });

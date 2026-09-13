@@ -10,15 +10,26 @@ import { playbook } from "../test/fixtures/playbook.ts";
 import type { DeliveryRecord } from "./devin-session-repository.ts";
 import { WebhookEventProcessors } from "./webhook-event-processors.ts";
 
-const issuesProcessor = Effect.fnUntraced(function* (
-  delivery: DeliveryRecord,
-  client: DevinClient["Service"],
-) {
-  const processors = yield* WebhookEventProcessors;
-  const processor = processors.get("issues");
-  assert.ok(processor);
-  return yield* processor(delivery, client);
-}, Effect.provide(WebhookEventProcessors.layer));
+const issuesProcessor = Effect.fnUntraced(
+  function* (
+    delivery: DeliveryRecord,
+    client: DevinClient["Service"],
+  ) {
+    const processors = yield* WebhookEventProcessors;
+    const processor = processors.get("issues");
+    assert.ok(processor);
+    return yield* processor(delivery, client);
+  },
+  Effect.provide(WebhookEventProcessors.layer),
+  Effect.provideService(
+    ConfigProvider.ConfigProvider,
+    ConfigProvider.fromUnknown({
+      DEVIN_API_KEY: "cog_test-key",
+      DEVIN_ORGANIZATION_ID: "org-test",
+      GITHUB_WEBHOOK_SECRET: "test-secret",
+    }),
+  ),
+);
 
 const delivery: DeliveryRecord = {
   id: "row-1",
@@ -70,6 +81,7 @@ Deno.test("issues processor creates a session for the exact added devin label an
   });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].playbook_id, "playbook-test");
+  assert.equal(requests[0].max_acu_limit, 10);
   assert.equal(requests[0].title, "GitHub issues: owner/repo");
   assert.deepEqual(requests[0].repos, ["owner/repo"]);
   assert.deepEqual(requests[0].tags, [
@@ -174,6 +186,7 @@ for (const stage of ["lookup", "create"] as const) {
         }).pipe(Effect.result),
       );
       assert.ok(Result.isFailure(result));
+      assert.ok(result.failure instanceof DevinSubmissionError);
       assert.equal(result.failure.disposition, expected);
       assert.equal(result.failure.httpStatus, httpStatus);
     });
@@ -229,6 +242,7 @@ for (const found of [true, false]) {
       });
     } else {
       assert.ok(Result.isFailure(result));
+      assert.ok(result.failure instanceof DevinSubmissionError);
       assert.equal(result.failure.disposition, "retryable");
     }
   });
@@ -238,6 +252,7 @@ Deno.test("concurrent issues create one playbook with the supplied content befor
   let stored: DevinPlaybook | undefined;
   const calls: string[] = [];
   let sessions = 0;
+  let expectedBudget = 10;
   const fetch: typeof globalThis.fetch = (input, init) => {
     const path = new URL(String(input)).pathname.split("/").at(-1);
     calls.push(`${init?.method} ${path}`);
@@ -277,6 +292,7 @@ If you cannot establish the bug or verify a safe fix, stop and return the eviden
     assert.equal(init.method, "POST");
     assert.ok(stored);
     assert.equal(body.playbook_id, "playbook-test");
+    assert.equal(body.max_acu_limit, expectedBudget);
     assert.equal(body.structured_output_required, true);
     const schema = body.structured_output_schema;
     assert.equal(schema.type, "object");
@@ -370,17 +386,20 @@ If you cannot establish the bug or verify a safe fix, stop and return the eviden
     Effect.provide(WebhookEventProcessors.layer),
     Effect.provide(DevinClient.layer),
     Effect.provideService(FetchHttpClient.Fetch, fetch),
-    Effect.provideService(
-      ConfigProvider.ConfigProvider,
-      ConfigProvider.fromUnknown({
-        DEVIN_API_KEY: "cog_test-key",
-        DEVIN_ORGANIZATION_ID: "org-test",
-        GITHUB_WEBHOOK_SECRET: "test-secret",
-      }),
-    ),
   );
-  for (let run = 0; run < 2; run++) {
-    const outcomes = await Effect.runPromise(process);
+  for (const [value, budget] of [[undefined, 10], ["27", 27]] as const) {
+    expectedBudget = budget;
+    const outcomes = await Effect.runPromise(process.pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown({
+          DEVIN_API_KEY: "cog_test-key",
+          DEVIN_ORGANIZATION_ID: "org-test",
+          GITHUB_WEBHOOK_SECRET: "test-secret",
+          DEVIN_MAX_SESSION_BUDGET: value,
+        }),
+      ),
+    ));
     assert.deepEqual(outcomes.map((outcome) => outcome._tag), [
       "SessionCreated",
       "SessionCreated",
