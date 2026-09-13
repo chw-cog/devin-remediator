@@ -11,6 +11,7 @@
     "db:generate": "deno run -A npm:drizzle-kit@1.0.0-rc.5-5935859 generate"
   },
   "imports": {
+    "@effect/platform-deno": "npm:@effect/platform-deno@4.0.0-rc.115",
     "@effect/sql-libsql": "npm:@effect/sql-libsql@4.0.0-rc.115",
     "@libsql/client": "npm:@libsql/client@0.18.0",
     "@octokit/webhooks": "npm:@octokit/webhooks@14.2.0",

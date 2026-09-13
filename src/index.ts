@@ -1,3 +1,4 @@
+import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { createApp } from "./app.ts";
 import { DatabaseClient } from "./database.ts";
@@ -28,16 +29,6 @@ export const runApplication = (
     yield* Effect.promise(() => server.finished);
   }));
 
-const waitForShutdown = Effect.callback<void>((resume) => {
-  const shutdown = () => resume(Effect.void);
-  Deno.addSignalListener("SIGINT", shutdown);
-  Deno.addSignalListener("SIGTERM", shutdown);
-  return Effect.sync(() => {
-    Deno.removeSignalListener("SIGINT", shutdown);
-    Deno.removeSignalListener("SIGTERM", shutdown);
-  });
-});
-
 if (import.meta.main) {
   const env = {
     DEVIN_API_KEY: Deno.env.get("DEVIN_API_KEY"),
@@ -56,9 +47,8 @@ if (import.meta.main) {
     ),
   };
   const ConfigLive = ConfigProvider.layer(ConfigProvider.fromUnknown(env));
-  await Effect.runPromise(
+  DenoRuntime.runMain(
     runApplication().pipe(
-      Effect.raceFirst(waitForShutdown),
       Effect.provide(AppLive),
       Effect.provide(ConfigLive),
     ),
