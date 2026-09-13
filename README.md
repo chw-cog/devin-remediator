@@ -97,8 +97,9 @@ prevent startup.
 | `DEVIN_SUBMITTING_TIMEOUT_SECONDS` | `60`    | Age at which an unknown submission becomes eligible for recovery |
 
 `DEVIN_API_KEY` and `DEVIN_ORGANIZATION_ID` configure the existing Devin v3
-organization API client. Create and get requests time out after 30 seconds. The
-API key must permit session creation and inspection in that organization.
+organization API client. Create, get, and complete tag lookups time out after 30
+seconds. The API key must permit session creation, inspection, and
+`ViewOrgSessions` listing in that organization.
 
 See [orchestration behavior and limitations](docs/orchestration.md) for the
 state transitions, retry policy, and remote-creation ambiguity.
@@ -157,15 +158,17 @@ for that Deno compatibility path.
   always enforce. Table-level primary key declarations preserve this constraint
   in Drizzle Kit's generated SQL. The receiver generates separate UUIDs for both
   rows.
-- SQLite checks enforce the five statuses and nonnegative attempts. Drizzle's
+- SQLite checks enforce the six statuses and nonnegative attempts. Drizzle's
   text enum alone only constrains TypeScript.
 - Timestamps are UTC ISO strings. Both rows share the insertion time. Every
   lifecycle update sets `updated_at` using Effect's clock.
 - Unique `github_delivery_id` permits one session per delivery, not per issue.
   Separate GitHub deliveries for the same issue can queue separate sessions.
 
-The orchestrator adds no tables, columns, indexes, or migrations. `status`,
-`attempts`, `updated_at`, and `devin_session_id` cover the required state.
+Tag recovery adds `claim_version` to fence stale workers,
+`recovery_empty_checks` to require repeated empty lookups, and
+`recovery_blocked` to stop automatic creation after duplicate matches. Startup
+applies the additive migration to existing databases.
 
 ## Check
 

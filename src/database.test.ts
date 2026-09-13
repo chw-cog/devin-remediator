@@ -290,7 +290,16 @@ Deno.test("forward migration preserves populated old jobs and enforces constrain
             );
             return {
               deliveries: yield* db.select().from(githubWebhookDeliveries),
-              sessions: yield* db.select().from(devinSessions),
+              sessions: yield* db.select({
+                id: devinSessions.id,
+                githubDeliveryId: devinSessions.githubDeliveryId,
+                status: devinSessions.status,
+                devinSessionId: devinSessions.devinSessionId,
+                prNumber: devinSessions.prNumber,
+                attempts: devinSessions.attempts,
+                insertedAt: devinSessions.insertedAt,
+                updatedAt: devinSessions.updatedAt,
+              }).from(devinSessions),
             };
           }).pipe(Effect.scoped, Effect.provide(Reactivity.layer)),
         );
@@ -315,7 +324,12 @@ Deno.test("forward migration preserves populated old jobs and enforces constrain
           );
           assert.deepEqual(
             yield* db.select().from(devinSessions),
-            before.sessions,
+            before.sessions.map((session) => ({
+              ...session,
+              claimVersion: 0,
+              recoveryEmptyChecks: 0,
+              recoveryBlocked: false,
+            })),
           );
           yield* db
             .$client`UPDATE devin_sessions SET status = 'skipped' WHERE id = 'old-session-0'`;

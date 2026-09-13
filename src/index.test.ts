@@ -43,6 +43,7 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
         ),
       getSession: () => Effect.die("No running session exists"),
       listSessions: () => Effect.die("Unexpected listSessions"),
+      findSessionsByTag: () => Effect.die("Unexpected tag lookup"),
     })),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
       DEVIN_API_KEY: "test-key",
@@ -145,6 +146,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
         return { status: "running" as const, pullRequestUrls: [] };
       }),
     listSessions: () => Effect.die("Unexpected listSessions"),
+    findSessionsByTag: () => Effect.die("Unexpected tag lookup"),
   });
   const pullRequestProcessor: WebhookDeliveryProcessor = (delivery, client) =>
     client.createSession({

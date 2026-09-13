@@ -37,6 +37,7 @@ Deno.test("issues processor creates a session for the exact added devin label an
     },
     getSession: () => Effect.die("Processor must not poll"),
     listSessions: () => Effect.die("Processor must not list sessions"),
+    findSessionsByTag: () => Effect.die("Processor must not recover sessions"),
   });
   assert.deepEqual(await Effect.runPromise(issuesProcessor(delivery, client)), {
     _tag: "SessionCreated",
@@ -45,6 +46,7 @@ Deno.test("issues processor creates a session for the exact added devin label an
   assert.equal(requests.length, 1);
   assert.equal(requests[0].title, "GitHub issues: owner/repo");
   assert.deepEqual(requests[0].repos, ["owner/repo"]);
+  assert.deepEqual(requests[0].tags, ["delivery-id:delivery-1", "issue:42"]);
   assert.match(requests[0].prompt, /Issue: 42/);
   assert.match(requests[0].prompt, /Delivery: delivery-1/);
   assert.ok(requests[0].prompt.endsWith(delivery.payload));
@@ -71,6 +73,7 @@ for (
       createSession: () => Effect.die("Skipped delivery must not create"),
       getSession: () => Effect.die("Skipped delivery must not poll"),
       listSessions: () => Effect.die("Skipped delivery must not list"),
+      findSessionsByTag: () => Effect.die("Skipped delivery must not recover"),
     });
     assert.deepEqual(
       await Effect.runPromise(
@@ -88,6 +91,8 @@ for (const disposition of ["retryable", "permanent", "ambiguous"] as const) {
       createSession: () => Effect.fail(error),
       getSession: () => Effect.die("Processor must not poll"),
       listSessions: () => Effect.die("Processor must not list sessions"),
+      findSessionsByTag: () =>
+        Effect.die("Processor must not recover sessions"),
     });
     const result = await Effect.runPromise(
       issuesProcessor(delivery, client).pipe(Effect.result),

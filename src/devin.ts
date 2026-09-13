@@ -193,6 +193,19 @@ const SessionPage = Schema.Struct({
   total: Schema.optional(Schema.NullOr(Schema.Int)),
 });
 
+const RecoverySessionPage = Schema.Struct({
+  items: Schema.Array(DevinSession),
+  has_next_page: Schema.Boolean,
+  end_cursor: Schema.NullOr(Schema.NonEmptyString),
+});
+
+export class DevinLookupError extends Schema.TaggedError<DevinLookupError>()(
+  "DevinLookupError",
+  { cause: Schema.Defect() },
+) {}
+
+const decodeTag = Schema.decodeUnknownEffect(Schema.NonEmptyString);
+
 const decodeSessionIds = Schema.decodeUnknownEffect(
   Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(200)),
 );
@@ -210,6 +223,10 @@ export class DevinClient extends Context.Service<DevinClient, {
   readonly listSessions: (session_ids: ReadonlyArray<string>) => Effect.Effect<
     ReadonlyArray<DevinSession>,
     HttpClientError.HttpClientError | Schema.SchemaError
+  >;
+  readonly findSessionsByTag: (tag: string) => Effect.Effect<
+    ReadonlyArray<DevinSession>,
+    DevinLookupError
   >;
 }>()("devin-remediator/DevinClient") {
   static readonly layer = Layer.effect(
@@ -260,7 +277,56 @@ export class DevinClient extends Context.Service<DevinClient, {
           ),
       );
 
-      return DevinClient.of({ createSession, getSession, listSessions });
+      const findSessionsByTag = Effect.fn("DevinClient.findSessionsByTag")(
+        function* (tag: string) {
+          yield* decodeTag(tag);
+          const matches = new Map<string, DevinSession>();
+          for (const is_archived of [false, true]) {
+            let after: string | undefined;
+            const cursors = new Set<string>();
+            do {
+              const page = yield* client.get("/sessions", {
+                urlParams: {
+                  tags: [tag],
+                  first: 200,
+                  is_archived,
+                  ...(after === undefined ? {} : { after }),
+                },
+              }).pipe(
+                Effect.flatMap(
+                  HttpClientResponse.schemaBodyJson(RecoverySessionPage),
+                ),
+              );
+              for (const session of page.items) {
+                if (session.tags.includes(tag)) {
+                  matches.set(session.session_id, session);
+                }
+              }
+              if (!page.has_next_page) break;
+              if (
+                page.end_cursor === null || cursors.has(page.end_cursor)
+              ) {
+                return yield* new DevinLookupError({
+                  cause:
+                    "Incomplete session lookup: missing or repeated cursor",
+                });
+              }
+              after = page.end_cursor;
+              cursors.add(after);
+            } while (true);
+          }
+          return [...matches.values()];
+        },
+        Effect.timeout("30 seconds"),
+        Effect.mapError((cause) => new DevinLookupError({ cause })),
+      );
+
+      return DevinClient.of({
+        createSession,
+        getSession,
+        listSessions,
+        findSessionsByTag,
+      });
     }),
   ).pipe(Layer.provide(FetchHttpClient.layer));
 }

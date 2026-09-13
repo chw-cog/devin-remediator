@@ -31,6 +31,7 @@ const ownsClaim = (claim: SessionRecord) =>
     eq(devinSessions.id, claim.id),
     eq(devinSessions.status, "submitting"),
     eq(devinSessions.attempts, claim.attempts),
+    eq(devinSessions.claimVersion, claim.claimVersion),
     isNull(devinSessions.devinSessionId),
   );
 
@@ -41,10 +42,14 @@ export class DevinSessionRepository extends Context.Service<
       ReadonlyArray<SessionWork>,
       DatabaseError
     >;
-    readonly recoverStale: Effect.Effect<
-      ReadonlyArray<SessionRecord>,
+    readonly claimStale: Effect.Effect<
+      ReadonlyArray<SessionWork>,
       DatabaseError
     >;
+    readonly recordRecoveryMiss: (
+      claim: SessionRecord,
+      outcome: "empty" | "unavailable" | "duplicates",
+    ) => Effect.Effect<ReadonlyArray<SessionRecord>, DatabaseError>;
     readonly findRunning: Effect.Effect<
       ReadonlyArray<RunningSession>,
       DatabaseError
@@ -103,6 +108,8 @@ export class DevinSessionRepository extends Context.Service<
           const claimed = yield* tx.update(devinSessions).set({
             status: "submitting",
             attempts: sql`${devinSessions.attempts} + 1`,
+            claimVersion: sql`${devinSessions.claimVersion} + 1`,
+            recoveryEmptyChecks: 0,
             updatedAt,
           }).where(and(
             inArray(devinSessions.id, pending.map((row) => row.id)),
@@ -124,24 +131,59 @@ export class DevinSessionRepository extends Context.Service<
         })
       ).pipe(Effect.mapError(databaseError));
 
-      const recoverStale = Effect.gen(function* () {
-        const now = yield* DateTime.now;
-        return yield* db.update(devinSessions).set({
-          status:
-            sql`CASE WHEN ${devinSessions.attempts} >= ${config.devinMaxAttempts}
-            THEN 'failed' ELSE 'pending' END`,
-          updatedAt: DateTime.formatIso(now),
-        }).where(and(
-          eq(devinSessions.status, "submitting"),
-          isNull(devinSessions.devinSessionId),
-          lt(
-            devinSessions.updatedAt,
-            DateTime.formatIso(DateTime.subtract(now, {
-              seconds: config.devinSubmittingTimeoutSeconds,
-            })),
-          ),
-        )).returning();
-      }).pipe(Effect.mapError(databaseError));
+      const claimStale = db.transaction((tx) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const claimed = yield* tx.update(devinSessions).set({
+            claimVersion: sql`${devinSessions.claimVersion} + 1`,
+            updatedAt: DateTime.formatIso(now),
+          }).where(and(
+            eq(devinSessions.status, "submitting"),
+            isNull(devinSessions.devinSessionId),
+            eq(devinSessions.recoveryBlocked, false),
+            lt(
+              devinSessions.updatedAt,
+              DateTime.formatIso(DateTime.subtract(now, {
+                seconds: config.devinSubmittingTimeoutSeconds,
+              })),
+            ),
+          )).returning({ id: devinSessions.id });
+          if (claimed.length === 0) return [];
+          return yield* tx.select({
+            session: devinSessions,
+            delivery: githubWebhookDeliveries,
+          }).from(devinSessions).innerJoin(
+            githubWebhookDeliveries,
+            eq(
+              devinSessions.githubDeliveryId,
+              githubWebhookDeliveries.deliveryId,
+            ),
+          ).where(inArray(devinSessions.id, claimed.map((row) => row.id)));
+        })
+      ).pipe(Effect.mapError(databaseError));
+
+      const recordRecoveryMiss = Effect.fn(
+        "DevinSessionRepository.recordRecoveryMiss",
+      )(
+        function* (
+          claim: SessionRecord,
+          outcome: "empty" | "unavailable" | "duplicates",
+        ) {
+          const retry = outcome === "empty" && claim.recoveryEmptyChecks >= 1;
+          return yield* db.update(devinSessions).set({
+            claimVersion: sql`${devinSessions.claimVersion} + 1`,
+            status: retry
+              ? claim.attempts < config.devinMaxAttempts ? "pending" : "failed"
+              : "submitting",
+            recoveryEmptyChecks: outcome === "empty"
+              ? claim.recoveryEmptyChecks + 1
+              : 0,
+            recoveryBlocked: outcome === "duplicates",
+            updatedAt: yield* nowIso,
+          }).where(ownsClaim(claim)).returning();
+        },
+        Effect.mapError(databaseError),
+      );
 
       const findRunning = db.select({
         session: devinSessions,
@@ -221,7 +263,8 @@ export class DevinSessionRepository extends Context.Service<
 
       return DevinSessionRepository.of({
         claimPending,
-        recoverStale,
+        claimStale,
+        recordRecoveryMiss,
         findRunning,
         markRunning,
         markSkipped,

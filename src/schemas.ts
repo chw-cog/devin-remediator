@@ -39,6 +39,10 @@ export const devinSessions = sqliteTable("devin_sessions", {
   devinSessionId: text("devin_session_id").unique(),
   prNumber: integer("pr_number"),
   attempts: integer("attempts").notNull().default(0),
+  claimVersion: integer("claim_version").notNull().default(0),
+  recoveryEmptyChecks: integer("recovery_empty_checks").notNull().default(0),
+  recoveryBlocked: integer("recovery_blocked", { mode: "boolean" }).notNull()
+    .default(false),
   insertedAt: text("inserted_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [

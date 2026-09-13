@@ -1,7 +1,12 @@
 import { Cause, Context, Effect, Layer, Schedule, Semaphore } from "effect";
 import { AppConfig } from "./config.ts";
 import { type DatabaseError } from "./database.ts";
-import { DevinClient, findPullRequestNumber } from "./devin.ts";
+import {
+  DevinClient,
+  findPullRequestNumber,
+  interpretSession,
+} from "./devin.ts";
+import { deliveryTag } from "./devin_prompt.ts";
 import {
   DevinSessionRepository,
   type RunningSession,
@@ -36,6 +41,71 @@ export class DevinSessionOrchestrator extends Context.Service<
       const processors = yield* WebhookDeliveryProcessors;
       const config = yield* AppConfig;
       const ticks = yield* Semaphore.make(1);
+
+      const recover = Effect.fn("DevinSessionOrchestrator.recover")(
+        function* (work: SessionWork) {
+          const result = yield* client.findSessionsByTag(
+            deliveryTag(work.delivery.deliveryId),
+          ).pipe(Effect.result);
+          if (result._tag === "Failure") {
+            yield* repository.recordRecoveryMiss(work.session, "unavailable");
+            yield* Effect.logWarning(
+              "Devin tag lookup unavailable or incomplete; retaining submitting",
+            );
+            return;
+          }
+          const matches = result.success;
+          if (matches.length > 1) {
+            yield* repository.recordRecoveryMiss(work.session, "duplicates");
+            yield* Effect.logError(
+              "duplicate Devin delivery tag; automatic submission blocked",
+            ).pipe(Effect.annotateLogs({
+              devin_session_ids: matches.map((session) => session.session_id),
+            }));
+            return;
+          }
+          if (matches.length === 0) {
+            const rows = yield* repository.recordRecoveryMiss(
+              work.session,
+              "empty",
+            );
+            for (const row of rows) {
+              yield* Effect.logWarning(
+                row.status === "pending"
+                  ? "repeated empty tag lookup; best-effort retry scheduled with duplicate risk"
+                  : row.status === "failed"
+                  ? "repeated empty tag lookup; submission attempts exhausted"
+                  : "empty tag lookup; waiting for another lookup after grace period",
+              );
+            }
+            return;
+          }
+          const remote = matches[0];
+          const saved = yield* repository.markRunning(
+            work.session,
+            remote.session_id,
+          );
+          if (!saved) return;
+          const state = interpretSession(remote);
+          if (state.status !== "running") {
+            yield* repository.finish(
+              {
+                ...work,
+                session: { ...work.session, devinSessionId: remote.session_id },
+              },
+              state.status,
+              findPullRequestNumber(
+                state.pullRequestUrls,
+                work.delivery.repo,
+              ),
+            );
+          }
+          yield* Effect.logInfo("Devin session recovered by delivery tag").pipe(
+            Effect.annotateLogs({ devin_session_id: remote.session_id }),
+          );
+        },
+        (effect, work) => effect.pipe(Effect.annotateLogs(identifiers(work))),
+      );
 
       const reconcile = Effect.fn("DevinSessionOrchestrator.reconcile")(
         function* (work: RunningSession) {
@@ -132,16 +202,10 @@ export class DevinSessionOrchestrator extends Context.Service<
         for (const work of yield* repository.findRunning) {
           yield* reconcile(work);
         }
-        for (const row of yield* repository.recoverStale) {
-          yield* Effect.logWarning("stale submitting record recovered").pipe(
-            Effect.annotateLogs({
-              id: row.id,
-              github_delivery_id: row.githubDeliveryId,
-              attempt: row.attempts,
-              status: row.status,
-            }),
-          );
-        }
+        yield* Effect.forEach(yield* repository.claimStale, recover, {
+          concurrency: config.devinMaxConcurrentSessions,
+          discard: true,
+        });
         const claimed = yield* repository.claimPending;
         yield* Effect.forEach(claimed, submit, {
           concurrency: config.devinMaxConcurrentSessions,

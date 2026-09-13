@@ -152,6 +152,9 @@ databaseTest(
         devinSessionId: null,
         prNumber: null,
         attempts: 0,
+        claimVersion: 0,
+        recoveryEmptyChecks: 0,
+        recoveryBlocked: false,
         insertedAt: row.insertedAt,
         updatedAt: row.insertedAt,
       });

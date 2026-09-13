@@ -165,6 +165,181 @@ Deno.test("listSessions with no IDs returns an empty array without HTTP", async 
   assert.deepEqual(result, []);
 });
 
+Deno.test("tag recovery scans every active and archived page, exact-matches tags, and deduplicates session IDs", async () => {
+  const tag = "delivery-id:uuid:/?&";
+  const match = { ...session, tags: [tag, "issue:42"] };
+  const archived = {
+    ...match,
+    session_id: "archived",
+    is_archived: true,
+    status: "exit",
+    status_detail: "finished",
+  };
+  const requests: string[] = [];
+  const result = await runWithFetch(
+    DevinClient.use((client) => client.findSessionsByTag(tag)),
+    (input, init) => {
+      const url = new URL(String(input));
+      assert.deepEqual(url.searchParams.getAll("tags"), [tag]);
+      assert.equal(url.searchParams.get("first"), "200");
+      assert.equal(init?.method, "GET");
+      assert.equal(
+        new Headers(init?.headers).get("authorization"),
+        "Bearer cog_test-key",
+      );
+      const page = `${url.searchParams.get("is_archived")}:${
+        url.searchParams.get("after")
+      }`;
+      requests.push(page);
+      switch (page) {
+        case "false:null":
+          return Promise.resolve(Response.json({
+            items: [
+              { ...session, tags: [tag.toUpperCase()] },
+              { ...session, tags: [`${tag}-suffix`] },
+              { ...session, tags: ["issue:42"] },
+            ],
+            has_next_page: true,
+            end_cursor: "next/?&",
+          }));
+        case "false:next/?&":
+          return Promise.resolve(Response.json({
+            items: [match],
+            has_next_page: false,
+            end_cursor: null,
+          }));
+        case "true:null":
+          return Promise.resolve(Response.json({
+            items: [match],
+            has_next_page: true,
+            end_cursor: "archived-next",
+          }));
+        case "true:archived-next":
+          return Promise.resolve(Response.json({
+            items: [archived],
+            has_next_page: false,
+            end_cursor: null,
+          }));
+        default:
+          assert.fail(`Unexpected page: ${page}`);
+      }
+    },
+  );
+  assert.deepEqual(requests, [
+    "false:null",
+    "false:next/?&",
+    "true:null",
+    "true:archived-next",
+  ]);
+  assert.deepEqual(result, [match, archived]);
+});
+
+Deno.test("tag recovery rejects incomplete results instead of returning absence or a partial match", async (t) => {
+  for (
+    const failure of [
+      "missing metadata",
+      "missing cursor",
+      "empty cursor",
+      "cursor cycle",
+      "later HTTP failure",
+      "archived HTTP failure",
+      "malformed session",
+    ]
+  ) {
+    await t.step(failure, async () => {
+      let calls = 0;
+      const result = await runWithFetch(
+        DevinClient.use((client) =>
+          client.findSessionsByTag("delivery-id:one").pipe(Effect.result)
+        ),
+        () => {
+          calls++;
+          if (calls === 1) {
+            return Promise.resolve(Response.json({
+              items: [{ ...session, tags: ["delivery-id:one"] }],
+              has_next_page: failure !== "archived HTTP failure",
+              end_cursor: "next",
+            }));
+          }
+          switch (failure) {
+            case "missing metadata":
+              return Promise.resolve(Response.json({ items: [] }));
+            case "missing cursor":
+              return Promise.resolve(Response.json({
+                items: [],
+                has_next_page: true,
+                end_cursor: null,
+              }));
+            case "empty cursor":
+              return Promise.resolve(Response.json({
+                items: [],
+                has_next_page: true,
+                end_cursor: "",
+              }));
+            case "cursor cycle":
+              return Promise.resolve(Response.json({
+                items: [],
+                has_next_page: true,
+                end_cursor: "next",
+              }));
+            case "malformed session":
+              return Promise.resolve(Response.json({
+                items: [null],
+                has_next_page: false,
+                end_cursor: null,
+              }));
+            default:
+              return Promise.resolve(
+                new Response("unavailable", { status: 403 }),
+              );
+          }
+        },
+      );
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure._tag, "DevinLookupError");
+      assert.equal(calls, 2);
+    });
+  }
+});
+
+Deno.test("complete tag lookup returns no matches only after both archive filters finish", async () => {
+  let calls = 0;
+  const result = await runWithFetch(
+    DevinClient.use((client) => client.findSessionsByTag("delivery-id:one")),
+    () => {
+      calls++;
+      return Promise.resolve(Response.json({
+        items: [session],
+        has_next_page: false,
+        end_cursor: null,
+      }));
+    },
+  );
+  assert.deepEqual(result, []);
+  assert.equal(calls, 2);
+});
+
+Deno.test("tag recovery has an overall timeout", async () => {
+  await runWithFetch(
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      const fiber = yield* client.findSessionsByTag("delivery-id:one").pipe(
+        Effect.result,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("30 seconds");
+      const result = yield* Fiber.join(fiber);
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure._tag, "DevinLookupError");
+    }).pipe(Effect.provide(TestClock.layer())),
+    (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")));
+      }),
+  );
+});
+
 Deno.test("listSessions rejects over 200 IDs and empty IDs without HTTP", async (t) => {
   for (
     const ids of [Array.from({ length: 201 }, (_, i) => `devin-${i}`), [""]]
