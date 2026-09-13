@@ -6,14 +6,22 @@ result, linked pull request, and session analysis.
 
 ## Quickstart
 
-Create a `.env` file in the repository root:
+Export these environment variables in your shell, or put them in a `.env` file
+in the repository root:
 
 ```dotenv
+# Devin API key with access to sessions, playbooks, and insights.
 DEVIN_API_KEY=<your-api-key>
+# Devin organization where remediation sessions run.
 DEVIN_ORGANIZATION_ID=<your-organization-id>
+# Shared secret for verifying GitHub webhooks; use the same value in GitHub.
 GITHUB_WEBHOOK_SECRET=<your-webhook-secret>
+# Database path inside the container; keep it under /data for persistence.
 SQLITE_DB_FILEPATH=/data/db.sql
 ```
+
+Docker Compose loads `.env` automatically and passes these values to the app.
+Exported shell variables take precedence. `.env` is ignored by Git.
 
 Start the app:
 
