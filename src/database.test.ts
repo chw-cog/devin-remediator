@@ -1,13 +1,8 @@
 import { strict as assert } from "node:assert";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { LibsqlClient } from "@effect/sql-libsql";
-import { createClient } from "@libsql/client";
-import { eq } from "drizzle-orm";
-import * as Drizzle from "drizzle-orm/effect-libsql";
+import { fileURLToPath } from "node:url";
 import { migrate } from "drizzle-orm/effect-libsql/migrator";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
-import { Reactivity } from "effect/unstable/reactivity";
 import { type AppDatabase, DatabaseClient } from "./database.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
@@ -48,6 +43,51 @@ const assertSqlFailure = Effect.fnUntraced(function* (
   assert.ok(result.failure.reason.cause instanceof Error);
   assert.match(result.failure.reason.cause.message, message);
 });
+
+databaseTest(
+  "analysis constraints require a JSON object exactly when collected",
+  (db) =>
+    Effect.gen(function* () {
+      yield* db.insert(githubWebhookDeliveries).values(delivery);
+      yield* db.insert(devinSessions).values({
+        id: "analysis-row",
+        githubDeliveryId: delivery.deliveryId,
+        status: "succeeded",
+        output: { outcome: "fixed", summary: "Verified." },
+        devinSessionId: "devin-analysis",
+        insertedAt,
+        updatedAt: insertedAt,
+      });
+      for (
+        const statement of [
+          "UPDATE devin_sessions SET analysis_status = 'unknown'",
+          "UPDATE devin_sessions SET analysis_attempts = -1",
+          "UPDATE devin_sessions SET analysis_status = 'collected'",
+          "UPDATE devin_sessions SET analysis = '{}'",
+          "UPDATE devin_sessions SET analysis_status = 'collected', analysis = '[]'",
+          "UPDATE devin_sessions SET analysis_status = 'collected', analysis = 'invalid'",
+        ]
+      ) {
+        yield* assertSqlFailure(
+          db.$client.unsafe(statement),
+          /CHECK constraint failed/,
+        );
+      }
+      yield* db.update(devinSessions).set({
+        analysisStatus: "collected",
+        analysis: { timeline: [], future_field: { preserved: true } },
+      });
+      const saved = yield* db.select().from(devinSessions).get();
+      assert.deepEqual(saved?.analysis, {
+        timeline: [],
+        future_field: { preserved: true },
+      });
+      assert.deepEqual(saved?.output, {
+        outcome: "fixed",
+        summary: "Verified.",
+      });
+    }),
+);
 
 databaseTest(
   "migrations enforce foreign keys, uniqueness, nullability, defaults, and checks",
@@ -119,6 +159,14 @@ databaseTest(
           [
             "UPDATE devin_sessions SET attempts = -1",
             /CHECK constraint failed/,
+          ],
+          [
+            "UPDATE devin_sessions SET inserted_at = NULL",
+            /NOT NULL constraint failed/,
+          ],
+          [
+            "UPDATE devin_sessions SET updated_at = NULL",
+            /NOT NULL constraint failed/,
           ],
           [
             "UPDATE devin_sessions SET devin_session_id = 'devin-1'",
@@ -246,19 +294,62 @@ databaseTest(
 );
 
 databaseTest(
-  "reapplying migrations preserves existing data",
+  "reapplying the initial migration preserves results, analyses, and recovery state",
   (db) =>
     Effect.gen(function* () {
-      yield* db.insert(githubWebhookDeliveries).values(delivery);
-      yield* db.insert(devinSessions).values({
-        id: "session-row",
-        githubDeliveryId: "github-1",
-        status: "pending",
-        insertedAt,
-        updatedAt: insertedAt,
-      });
+      const cases = [
+        ["pending", null],
+        ["submitting", null],
+        ["running", null],
+        ["skipped", null],
+        ["succeeded", "fixed"],
+        ["succeeded", "needs_human"],
+        ["succeeded", "not_reproducible"],
+        ["succeeded", "already_resolved"],
+        ["failed", "failed"],
+      ] as const;
+      for (const [index, [status, outcome]] of cases.entries()) {
+        const deliveryId = `github-${index}`;
+        yield* db.insert(githubWebhookDeliveries).values({
+          ...delivery,
+          id: `delivery-${index}`,
+          deliveryId,
+        });
+        const output = outcome === null ? null : {
+          outcome,
+          summary: "Recorded remediation result.",
+          verification: {
+            status: "partial" as const,
+            evidence: ["Unit tests passed; integration credentials missing."],
+          },
+          blocker: "Integration credentials missing",
+          next_action: "Maintainer to run integration tests",
+          confidence: 0.6,
+        };
+        yield* db.insert(devinSessions).values({
+          id: `session-${index}`,
+          githubDeliveryId: deliveryId,
+          status,
+          output,
+          analysis: outcome === null
+            ? null
+            : { timeline: [], extra: { kept: true } },
+          analysisStatus: outcome === null ? "pending" : "collected",
+          analysisAttempts: 2,
+          analysisNextAttemptAt: "2026-02-01T00:00:00.000Z",
+          devinSessionId: `devin-${index}`,
+          prNumber: index + 1,
+          attempts: 3,
+          claimVersion: 9,
+          recoveryEmptyChecks: 2,
+          recoveryBlocked: true,
+          insertedAt,
+          updatedAt: insertedAt,
+        });
+      }
       const deliveries = yield* db.select().from(githubWebhookDeliveries);
       const sessions = yield* db.select().from(devinSessions);
+      assert.equal(sessions.length, cases.length);
       yield* migrate(db, {
         migrationsFolder: fileURLToPath(
           new URL("../migrations", import.meta.url),
@@ -269,6 +360,10 @@ databaseTest(
         deliveries,
       );
       assert.deepEqual(yield* db.select().from(devinSessions), sessions);
+      assert.deepEqual(yield* db.$client`PRAGMA foreign_key_check`, []);
+      const columns = yield* db.$client`PRAGMA table_info(devin_sessions)`;
+      assert.ok(columns.some((column) => column.name === "output"));
+      assert.ok(!columns.some((column) => column.name === "outcome"));
     }),
 );
 
@@ -305,109 +400,6 @@ Deno.test("DatabaseClient.layer closes the connection after success", async () =
   assert.match(result.failure.reason.cause.message, /closed/i);
 });
 
-Deno.test("JSON output migration preserves existing outcomes and recovery state", async () => {
-  const sqlite = createClient({ url: "file::memory:" });
-  try {
-    await sqlite.execute("PRAGMA foreign_keys = ON");
-    for (
-      const migration of [
-        "20260913080724_webhook_queue",
-        "20260914000000_skipped_webhooks",
-        "20260914000001_delivery_tag_recovery",
-        "20260914000002_session_outcomes",
-      ]
-    ) {
-      await sqlite.executeMultiple(
-        await Deno.readTextFile(
-          new URL(`../migrations/${migration}/migration.sql`, import.meta.url),
-        ),
-      );
-    }
-    const cases = [
-      ["pending", null],
-      ["submitting", null],
-      ["running", null],
-      ["skipped", null],
-      ["succeeded", "fixed"],
-      ["succeeded", "needs_human"],
-      ["succeeded", "not_reproducible"],
-      ["failed", "failed"],
-    ] as const;
-    for (const [index, [status, outcome]] of cases.entries()) {
-      await sqlite.execute({
-        sql: `INSERT INTO github_webhook_deliveries
-          (id, delivery_id, event_name, repo, payload, inserted_at)
-          VALUES (?, ?, 'issues', 'owner/repo', '{}', ?)`,
-        args: [`delivery-${index}`, `github-${index}`, insertedAt],
-      });
-      await sqlite.execute({
-        sql: `INSERT INTO devin_sessions
-          (id, github_delivery_id, status, outcome, devin_session_id, pr_number,
-           attempts, claim_version, recovery_empty_checks, recovery_blocked,
-           inserted_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, 2, 7, 1, 1, ?, ?)`,
-        args: [
-          `session-${index}`,
-          `github-${index}`,
-          status,
-          outcome,
-          `remote-${index}`,
-          index + 1,
-          insertedAt,
-          insertedAt,
-        ],
-      });
-    }
-    const before = (await sqlite.execute(
-      "SELECT * FROM devin_sessions ORDER BY id",
-    )).rows;
-    await sqlite.executeMultiple(
-      await Deno.readTextFile(
-        new URL(
-          "../migrations/20260914000003_session_output/migration.sql",
-          import.meta.url,
-        ),
-      ),
-    );
-    const after = (await sqlite.execute(
-      "SELECT * FROM devin_sessions ORDER BY id",
-    )).rows;
-    assert.deepEqual(
-      after,
-      before.map(({ outcome, ...row }) => ({
-        ...row,
-        output: outcome === null ? null : JSON.stringify({
-          outcome,
-          summary: "Legacy session: structured output was not recorded.",
-        }),
-      })),
-    );
-    await sqlite.execute({
-      sql: "UPDATE devin_sessions SET output = ? WHERE id = 'session-4'",
-      args: [JSON.stringify({
-        outcome: "already_resolved",
-        summary: "Existing fix verified.",
-        verification: {
-          status: "passed",
-          evidence: ["Regression test passes against the existing fix."],
-        },
-        blocker: null,
-        next_action: null,
-      })],
-    });
-    const columns =
-      (await sqlite.execute("PRAGMA table_info(devin_sessions)")).rows;
-    assert.ok(columns.some((column) => column.name === "output"));
-    assert.ok(!columns.some((column) => column.name === "outcome"));
-    assert.deepEqual(
-      (await sqlite.execute("PRAGMA foreign_key_check")).rows,
-      [],
-    );
-  } finally {
-    sqlite.close();
-  }
-});
-
 Deno.test("DatabaseClient.layer closes the connection after failure", async () => {
   let db: AppDatabase | undefined;
   const result = await Effect.runPromise(
@@ -425,178 +417,4 @@ Deno.test("DatabaseClient.layer closes the connection after failure", async () =
   assert.ok(Result.isFailure(after));
   assert.ok(after.failure.reason.cause instanceof Error);
   assert.match(after.failure.reason.cause.message, /closed/i);
-});
-
-Deno.test("forward migration preserves populated old jobs and enforces constraints with skipped enabled", async () => {
-  const directory = await Deno.makeTempDir();
-  const filepath = `${directory}/upgrade.sqlite`;
-  const historical = "20260913080724_webhook_queue";
-  const migrationsFolder = `${directory}/migrations`;
-  try {
-    await Deno.mkdir(`${migrationsFolder}/${historical}`, { recursive: true });
-    await Deno.copyFile(
-      new URL(`../migrations/${historical}/migration.sql`, import.meta.url),
-      `${migrationsFolder}/${historical}/migration.sql`,
-    );
-    const sqlite = createClient({ url: pathToFileURL(filepath).href });
-    const before = await (async () => {
-      try {
-        return await Effect.runPromise(
-          Effect.gen(function* () {
-            const client = yield* LibsqlClient.make({ liveClient: sqlite });
-            const db = yield* Drizzle.makeWithDefaults().pipe(
-              Effect.provideService(LibsqlClient.LibsqlClient, client),
-            );
-            yield* client`PRAGMA foreign_keys = ON`;
-            yield* migrate(db, { migrationsFolder });
-            for (
-              const [index, status] of [
-                "pending",
-                "submitting",
-                "running",
-                "succeeded",
-                "failed",
-              ].entries()
-            ) {
-              yield* db.insert(githubWebhookDeliveries).values({
-                ...delivery,
-                id: `old-delivery-${index}`,
-                deliveryId: `old-github-${index}`,
-                issueNumber: 42,
-                payload: `{"old":${index}}`,
-              });
-              yield* db.$client.unsafe(
-                `INSERT INTO devin_sessions
-              (id, github_delivery_id, status, devin_session_id, pr_number,
-               attempts, inserted_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                  `old-session-${index}`,
-                  `old-github-${index}`,
-                  status,
-                  index >= 2 ? `old-remote-${index}` : null,
-                  status === "succeeded" ? 99 : null,
-                  index,
-                  insertedAt,
-                  "2026-02-01T00:00:00.000Z",
-                ],
-              );
-            }
-            yield* assertSqlFailure(
-              db.$client`UPDATE devin_sessions SET status = 'skipped'`,
-              /CHECK constraint failed/,
-            );
-            return {
-              deliveries: yield* db.select().from(githubWebhookDeliveries),
-              sessions: yield* db.select({
-                id: devinSessions.id,
-                githubDeliveryId: devinSessions.githubDeliveryId,
-                status: devinSessions.status,
-                devinSessionId: devinSessions.devinSessionId,
-                prNumber: devinSessions.prNumber,
-                attempts: devinSessions.attempts,
-                insertedAt: devinSessions.insertedAt,
-                updatedAt: devinSessions.updatedAt,
-              }).from(devinSessions),
-            };
-          }).pipe(Effect.scoped, Effect.provide(Reactivity.layer)),
-        );
-      } finally {
-        sqlite.close();
-      }
-    })();
-    const upgrade = DatabaseClient.layer.pipe(Layer.provide(
-      ConfigProvider.layer(ConfigProvider.fromUnknown({
-        DEVIN_API_KEY: "test-key",
-        DEVIN_ORGANIZATION_ID: "org-test",
-        GITHUB_WEBHOOK_SECRET: "test-secret",
-        SQLITE_DB_FILEPATH: filepath,
-      })),
-    ));
-    await Effect.runPromise(
-      DatabaseClient.use(({ db }) =>
-        Effect.gen(function* () {
-          assert.deepEqual(
-            yield* db.select().from(githubWebhookDeliveries),
-            before.deliveries,
-          );
-          assert.deepEqual(
-            yield* db.select().from(devinSessions),
-            before.sessions.map((session) => ({
-              ...session,
-              output:
-                session.status === "succeeded" || session.status === "failed"
-                  ? {
-                    outcome: session.status === "succeeded"
-                      ? "needs_human"
-                      : "failed",
-                    summary:
-                      "Legacy session: structured output was not recorded.",
-                  }
-                  : null,
-              claimVersion: 0,
-              recoveryEmptyChecks: 0,
-              recoveryBlocked: false,
-            })),
-          );
-          yield* db
-            .$client`UPDATE devin_sessions SET status = 'skipped' WHERE id = 'old-session-0'`;
-          const skipped = yield* db.select().from(devinSessions).where(
-            eq(devinSessions.id, "old-session-0"),
-          ).get();
-          assert.equal(skipped?.status, "skipped");
-          assert.equal(skipped?.devinSessionId, null);
-          assert.equal(skipped?.attempts, 0);
-          for (
-            const [statement, message] of [
-              [
-                "UPDATE devin_sessions SET github_delivery_id = 'missing' WHERE id = 'old-session-0'",
-                /FOREIGN KEY constraint failed/,
-              ],
-              [
-                "UPDATE devin_sessions SET github_delivery_id = 'old-github-1' WHERE id = 'old-session-0'",
-                /UNIQUE constraint failed/,
-              ],
-              [
-                "UPDATE devin_sessions SET devin_session_id = 'old-remote-2' WHERE id = 'old-session-0'",
-                /UNIQUE constraint failed/,
-              ],
-              [
-                "UPDATE devin_sessions SET status = 'unknown'",
-                /CHECK constraint failed/,
-              ],
-              [
-                "UPDATE devin_sessions SET attempts = -1",
-                /CHECK constraint failed/,
-              ],
-              [
-                "UPDATE devin_sessions SET inserted_at = NULL",
-                /NOT NULL constraint failed/,
-              ],
-              [
-                "UPDATE devin_sessions SET updated_at = NULL",
-                /NOT NULL constraint failed/,
-              ],
-              [
-                "DELETE FROM github_webhook_deliveries",
-                /FOREIGN KEY constraint failed/,
-              ],
-            ] as const
-          ) {
-            yield* assertSqlFailure(db.$client.unsafe(statement), message);
-          }
-          const upgraded = yield* db.select().from(devinSessions);
-          yield* migrate(db, {
-            migrationsFolder: fileURLToPath(
-              new URL("../migrations", import.meta.url),
-            ),
-          });
-          assert.deepEqual(yield* db.select().from(devinSessions), upgraded);
-          assert.deepEqual(yield* db.$client`PRAGMA foreign_key_check`, []);
-        })
-      ).pipe(Effect.provide(upgrade)),
-    );
-  } finally {
-    await Deno.remove(directory, { recursive: true });
-  }
 });

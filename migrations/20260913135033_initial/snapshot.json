@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "b409b6e1-110a-466d-b5d1-b6203458f0a1",
+  "id": "c2be20ee-7f99-49a6-b2be-0cea61606503",
   "prevIds": [
-    "ee1e4dbb-1c61-422a-97c9-b918496a9ed6"
+    "00000000-0000-0000-0000-000000000000"
   ],
   "ddl": [
     {
@@ -50,7 +50,57 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "outcome",
+      "name": "output",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "analysis",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'pending'",
+      "generated": null,
+      "name": "analysis_status",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "analysis_attempts",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'1970-01-01T00:00:00.000Z'",
+      "generated": null,
+      "name": "analysis_next_attempt_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "analysis_reason",
       "entityType": "columns",
       "table": "devin_sessions"
     },
@@ -239,6 +289,24 @@
     },
     {
       "columns": [
+        {
+          "value": "analysis_status",
+          "isExpression": false
+        },
+        {
+          "value": "analysis_next_attempt_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "devin_sessions_analysis_due_idx",
+      "entityType": "indexes",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
         "github_delivery_id"
       ],
       "nameExplicit": false,
@@ -277,8 +345,20 @@
       "table": "devin_sessions"
     },
     {
-      "value": "(\"status\" IN ('succeeded', 'failed') AND \"outcome\" IS NOT NULL AND \"outcome\" IN ('fixed', 'needs_human', 'not_reproducible', 'failed')) OR (\"status\" NOT IN ('succeeded', 'failed') AND \"outcome\" IS NULL)",
-      "name": "devin_sessions_outcome_check",
+      "value": "\"analysis_attempts\" >= 0",
+      "name": "devin_sessions_analysis_attempts_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "(\"analysis_status\" = 'collected' AND \"analysis\" IS NOT NULL AND CASE WHEN json_valid(\"analysis\") THEN json_type(\"analysis\") = 'object' ELSE 0 END) OR (\"analysis_status\" IN ('pending', 'unavailable') AND \"analysis\" IS NULL)",
+      "name": "devin_sessions_analysis_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "(\"status\" IN ('succeeded', 'failed') AND \"output\" IS NOT NULL AND CASE WHEN json_valid(\"output\") THEN json_type(\"output\") = 'object' AND json_type(\"output\", '$.outcome') IS 'text' AND json_extract(\"output\", '$.outcome') IN ('fixed', 'needs_human', 'not_reproducible', 'failed', 'already_resolved') AND json_type(\"output\", '$.summary') IS 'text' AND length(trim(json_extract(\"output\", '$.summary'))) > 0 ELSE 0 END) OR (\"status\" NOT IN ('succeeded', 'failed') AND \"output\" IS NULL)",
+      "name": "devin_sessions_output_check",
       "entityType": "checks",
       "table": "devin_sessions"
     }

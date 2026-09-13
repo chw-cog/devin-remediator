@@ -29,6 +29,174 @@ const session = {
   pull_requests: [],
 };
 
+const insightsSession = {
+  ...session,
+  status: "exit",
+  status_detail: "finished",
+  num_devin_messages: 3,
+  num_user_messages: 1,
+  session_size: "xs",
+  analysis: {
+    classification: { category: "bug_fixing", confidence: 0.9 },
+    issues: [],
+    timeline: [{ title: "Verified", description: "Tests passed." }],
+    future_field: { preserved: true },
+  },
+};
+
+Deno.test("listSessionsWithInsights batches authenticated IDs, follows pages, and preserves analysis", async () => {
+  const cursors: (string | null)[] = [];
+  const result = await runWithFetch(
+    DevinClient.use((client) =>
+      client.listSessionsWithInsights(["devin-test", "devin-second"])
+    ),
+    (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(
+        url.pathname,
+        "/v3/organizations/org-test/sessions/insights",
+      );
+      assert.equal(init?.method, "GET");
+      assert.equal(
+        new Headers(init?.headers).get("authorization"),
+        "Bearer cog_test-key",
+      );
+      assert.deepEqual(url.searchParams.getAll("session_ids"), [
+        "devin-test",
+        "devin-second",
+      ]);
+      assert.equal(url.searchParams.get("first"), "200");
+      const after = url.searchParams.get("after");
+      cursors.push(after);
+      return Promise.resolve(Response.json(
+        after === null
+          ? {
+            items: [insightsSession],
+            has_next_page: true,
+            end_cursor: "next",
+          }
+          : {
+            items: [
+              { ...insightsSession, session_id: "unrequested" },
+              {
+                ...insightsSession,
+                session_id: "devin-second",
+                analysis: null,
+              },
+            ],
+            has_next_page: false,
+            end_cursor: null,
+          },
+      ));
+    },
+  );
+  assert.deepEqual(cursors, [null, "next"]);
+  assert.deepEqual(result, [
+    insightsSession,
+    { ...insightsSession, session_id: "devin-second", analysis: null },
+  ]);
+});
+
+Deno.test("listSessionsWithInsights skips empty input and rejects invalid batches before HTTP", async () => {
+  for (const ids of [[], [""], Array.from({ length: 201 }, (_, i) => `${i}`)]) {
+    const result = await runWithFetch(
+      DevinClient.use((client) =>
+        client.listSessionsWithInsights(ids).pipe(Effect.result)
+      ),
+      () => {
+        throw new Error("Must not call HTTP");
+      },
+    );
+    if (ids.length === 0) {
+      assert.ok(Result.isSuccess(result));
+      assert.deepEqual(result.success, []);
+    } else {
+      assert.ok(Result.isFailure(result));
+    }
+  }
+});
+
+Deno.test("listSessionsWithInsights fails rather than returning partial results for broken pagination or malformed analysis", async () => {
+  for (const variant of ["missing", "repeated", "invalid-analysis"]) {
+    let calls = 0;
+    const result = await runWithFetch(
+      DevinClient.use((client) =>
+        client.listSessionsWithInsights(["devin-test"]).pipe(Effect.result)
+      ),
+      () => {
+        calls++;
+        return Promise.resolve(Response.json({
+          items: [{
+            ...insightsSession,
+            analysis: variant === "invalid-analysis"
+              ? "not an object"
+              : insightsSession.analysis,
+          }],
+          has_next_page: true,
+          end_cursor: variant === "missing" ? null : "same-cursor",
+        }));
+      },
+    );
+    assert.ok(Result.isFailure(result), variant);
+    assert.equal(calls, variant === "repeated" ? 2 : 1);
+  }
+});
+
+Deno.test("generateSessionInsights posts the encoded session ID and accepts started and already_exists", async () => {
+  for (const status of ["started", "already_exists"]) {
+    const id = "devin-test/with space";
+    const result = await runWithFetch(
+      DevinClient.use((client) => client.generateSessionInsights(id)),
+      (input, init) => {
+        assert.equal(
+          String(input),
+          "https://api.devin.ai/v3/organizations/org-test/sessions/devin-test%2Fwith%20space/insights/generate",
+        );
+        assert.equal(init?.method, "POST");
+        assert.equal(
+          new Headers(init?.headers).get("authorization"),
+          "Bearer cog_test-key",
+        );
+        return Promise.resolve(Response.json({ session_id: id, status }));
+      },
+    );
+    assert.deepEqual(result, { session_id: id, status });
+  }
+});
+
+Deno.test("insights methods surface HTTP errors and reject invalid generation responses", async () => {
+  for (const status of [403, 429, 503]) {
+    for (const generate of [false, true]) {
+      const result = await runWithFetch(
+        DevinClient.use((client) =>
+          (generate
+            ? client.generateSessionInsights("devin-test").pipe(Effect.asVoid)
+            : client.listSessionsWithInsights(["devin-test"]).pipe(
+              Effect.asVoid,
+            ))
+            .pipe(Effect.result)
+        ),
+        () => Promise.resolve(new Response("unavailable", { status })),
+      );
+      assert.ok(Result.isFailure(result));
+    }
+  }
+  for (
+    const body of [
+      { session_id: "devin-test", status: "unknown" },
+      { session_id: "different", status: "started" },
+    ]
+  ) {
+    const result = await runWithFetch(
+      DevinClient.use((client) =>
+        client.generateSessionInsights("devin-test").pipe(Effect.result)
+      ),
+      () => Promise.resolve(Response.json(body)),
+    );
+    assert.ok(Result.isFailure(result));
+  }
+});
+
 function runWithFetch<A, E>(
   effect: Effect.Effect<A, E, DevinClient>,
   fetch: typeof globalThis.fetch,

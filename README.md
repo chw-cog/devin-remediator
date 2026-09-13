@@ -89,12 +89,13 @@ issue can create separate sessions.
 These optional environment variables accept positive integers. Invalid values
 prevent startup.
 
-| Variable                           | Default | Meaning                                                          |
-| ---------------------------------- | ------- | ---------------------------------------------------------------- |
-| `DEVIN_MAX_CONCURRENT_SESSIONS`    | `3`     | Maximum local `submitting` plus `running` records                |
-| `DEVIN_MAX_ATTEMPTS`               | `3`     | Maximum reserved submission attempts per delivery                |
-| `DEVIN_ORCHESTRATOR_INTERVAL_MS`   | `3000`  | Delay after each completed tick                                  |
-| `DEVIN_SUBMITTING_TIMEOUT_SECONDS` | `60`    | Age at which an unknown submission becomes eligible for recovery |
+| Variable                           | Default | Meaning                                                                   |
+| ---------------------------------- | ------- | ------------------------------------------------------------------------- |
+| `DEVIN_MAX_CONCURRENT_SESSIONS`    | `3`     | Maximum local `submitting` plus `running` records                         |
+| `DEVIN_MAX_ATTEMPTS`               | `3`     | Maximum reserved submission attempts per delivery                         |
+| `DEVIN_ANALYSIS_MAX_ATTEMPTS`      | `12`    | Maximum reserved analysis collection attempts per finished remote session |
+| `DEVIN_ORCHESTRATOR_INTERVAL_MS`   | `3000`  | Delay after each completed tick                                           |
+| `DEVIN_SUBMITTING_TIMEOUT_SECONDS` | `60`    | Age at which an unknown submission becomes eligible for recovery          |
 
 `DEVIN_API_KEY` and `DEVIN_ORGANIZATION_ID` configure the existing Devin v3
 organization API client. Create, get, and complete tag lookups time out after 30
@@ -103,8 +104,51 @@ seconds. The API key must permit session creation, inspection, and
 requires `ManageOrgPlaybooks` (`org.playbooks.manage`); looking it up requires
 `UseDevinSessions` (`org.devins.use`).
 
-See [orchestration behavior and limitations](docs/orchestration.md) for the
-state transitions, retry policy, and remote-creation ambiguity.
+Analysis collection also requires `ManageOrgSessions` to request generation.
+Missing permissions do not change remediation results, but collection eventually
+stops after its attempt limit.
+
+### Session analysis collection
+
+After reconciliation, recovery, and submission, each tick collects insights for
+up to three due `succeeded` or `failed` rows that have a Devin session ID. It
+batch-fetches insights, follows pagination, and stores each non-null `analysis`
+object unchanged in `devin_sessions.analysis`. Remediation `output`, status, PR,
+and `updated_at` remain unchanged.
+
+Available analyses are saved before generation requests start. The batch size
+matches the generation concurrency limit, so reserved work fits in one request
+wave rather than waiting behind slow requests. For missing analysis, the app
+requests background generation with at most three concurrent requests. It polls
+again after 30 seconds, then 60, 120, 240, and 300 seconds between subsequent
+attempts. `already_exists` can mean generation is still running. Empty responses
+and API errors remain retryable. Sessions with no Devin messages become
+`unavailable`; remotely active sessions are deferred.
+
+The database persists `analysis_status`, `analysis_attempts`,
+`analysis_next_attempt_at`, and `analysis_reason`. Attempts are reserved before
+network calls, so an interrupted process can resume after the stored retry time.
+When the attempt limit is reached, the next due pass marks analysis
+`unavailable` and preserves the last reason. The state applies only to
+collection, not to remediation success or failure.
+
+Insights client calls time out after 10 seconds. The entire collection phase has
+a 15-second budget and logs failures without failing the tick. It uses no
+remediation concurrency slots. Finished remote sessions with pending analysis
+are eligible automatically; sessions that failed before remote creation are
+excluded. Collected analyses are snapshots and are not refreshed automatically.
+
+To retry an unavailable analysis after resolving its cause, reset its collection
+state without changing remediation fields:
+
+```sql
+UPDATE devin_sessions
+SET analysis_status = 'pending',
+    analysis_attempts = 0,
+    analysis_next_attempt_at = '1970-01-01T00:00:00.000Z',
+    analysis_reason = NULL
+WHERE id = '<local-session-record-id>' AND analysis_status = 'unavailable';
+```
 
 ## Database schemas and migrations
 
@@ -117,6 +161,10 @@ deno task db:generate
 
 Review and commit the generated files. Production startup and in-memory tests
 apply the same migrations.
+
+Migration history is squashed into one initial migration for fresh databases.
+Databases created with the old migration history must be recreated or explicitly
+rebaselined before use. Startup does not perform that conversion.
 
 ### Effect integration
 
@@ -144,9 +192,6 @@ changing their title or body. Session creation includes the resulting
 session requests remain concurrent. Playbook failures block session creation.
 Transient failures return the job to the normal retry path, not session
 recovery.
-
-See [the playbook API notes](docs/devin-playbook-api.md) for endpoint contracts
-and limits on cross-process deduplication.
 
 `src/index.ts` composes the delivery handler, Devin client, session repository,
 orchestrator, and config provider over one database layer. `runApplication`
@@ -179,10 +224,9 @@ for that Deno compatibility path.
 - Unique `github_delivery_id` permits one session per delivery, not per issue.
   Separate GitHub deliveries for the same issue can queue separate sessions.
 
-Tag recovery adds `claim_version` to fence stale workers,
+Tag recovery uses `claim_version` to fence stale workers,
 `recovery_empty_checks` to require repeated empty lookups, and
-`recovery_blocked` to stop automatic creation after duplicate matches. Startup
-applies the additive migration to existing databases.
+`recovery_blocked` to stop automatic creation after duplicate matches.
 
 ## Check
 

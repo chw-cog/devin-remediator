@@ -23,6 +23,7 @@ Deno.test("AppConfig loads settings from the supplied config layer", async () =>
       devinOrganizationId: "org-test",
       devinMaxConcurrentSessions: 3,
       devinMaxAttempts: 3,
+      devinAnalysisMaxAttempts: 12,
       devinOrchestratorIntervalMs: 3000,
       devinSubmittingTimeoutSeconds: 60,
       githubWebhookSecret: `${key}-webhook-secret`,
@@ -36,6 +37,7 @@ Deno.test("orchestrator settings accept positive integers and reject invalid val
     const [name, field] of [
       ["DEVIN_MAX_CONCURRENT_SESSIONS", "devinMaxConcurrentSessions"],
       ["DEVIN_MAX_ATTEMPTS", "devinMaxAttempts"],
+      ["DEVIN_ANALYSIS_MAX_ATTEMPTS", "devinAnalysisMaxAttempts"],
       ["DEVIN_ORCHESTRATOR_INTERVAL_MS", "devinOrchestratorIntervalMs"],
       ["DEVIN_SUBMITTING_TIMEOUT_SECONDS", "devinSubmittingTimeoutSeconds"],
     ] as const

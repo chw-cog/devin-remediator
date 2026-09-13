@@ -60,6 +60,10 @@ Deno.test("issues processor creates a session for the exact added devin label an
     getSession: () => Effect.die("Processor must not poll"),
     listSessions: () => Effect.die("Processor must not list sessions"),
     findSessionsByTag: () => Effect.die("Processor must not recover sessions"),
+    listSessionsWithInsights: () =>
+      Effect.die("Processor must not fetch insights"),
+    generateSessionInsights: () =>
+      Effect.die("Processor must not generate insights"),
   });
   assert.deepEqual(await Effect.runPromise(issuesProcessor(delivery, client)), {
     _tag: "SessionCreated",
@@ -105,6 +109,10 @@ for (
       getSession: () => Effect.die("Skipped delivery must not poll"),
       listSessions: () => Effect.die("Skipped delivery must not list"),
       findSessionsByTag: () => Effect.die("Skipped delivery must not recover"),
+      listSessionsWithInsights: () =>
+        Effect.die("Skipped delivery must not fetch insights"),
+      generateSessionInsights: () =>
+        Effect.die("Skipped delivery must not generate insights"),
     });
     assert.deepEqual(
       await Effect.runPromise(
@@ -126,6 +134,10 @@ for (const disposition of ["retryable", "permanent", "ambiguous"] as const) {
       listSessions: () => Effect.die("Processor must not list sessions"),
       findSessionsByTag: () =>
         Effect.die("Processor must not recover sessions"),
+      listSessionsWithInsights: () =>
+        Effect.die("Processor must not fetch insights"),
+      generateSessionInsights: () =>
+        Effect.die("Processor must not generate insights"),
     });
     const result = await Effect.runPromise(
       issuesProcessor(delivery, client).pipe(Effect.result),
@@ -142,6 +154,8 @@ const unusedClient = DevinClient.of({
   getSession: () => Effect.die("Unexpected polling"),
   listSessions: () => Effect.die("Unexpected session listing"),
   findSessionsByTag: () => Effect.die("Unexpected session recovery"),
+  listSessionsWithInsights: () => Effect.die("Unexpected insights lookup"),
+  generateSessionInsights: () => Effect.die("Unexpected insights generation"),
 });
 
 for (const stage of ["lookup", "create"] as const) {

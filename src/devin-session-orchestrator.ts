@@ -8,6 +8,8 @@ import {
   interpretSession,
 } from "./devin.ts";
 import {
+  analysisBatchSize,
+  type AnalysisClaim,
   DevinSessionRepository,
   type RunningSession,
   type SessionWork,
@@ -242,6 +244,94 @@ export class DevinSessionOrchestrator extends Context.Service<
           effect.pipe(Effect.annotateLogs(identifiers(work))),
       );
 
+      const collectAnalyses = Effect.gen(function* () {
+        const claims = yield* repository.claimDueAnalyses;
+        if (claims.length === 0) return;
+        const result = yield* client.listSessionsWithInsights(
+          claims.map((claim) => claim.devinSessionId),
+        ).pipe(Effect.result);
+        if (result._tag === "Failure") {
+          yield* Effect.logWarning("analysis.lookup_failed").pipe(
+            Effect.annotateLogs(errorFields(result.failure)),
+          );
+          for (const claim of claims) {
+            yield* repository.recordAnalysis(claim, {
+              status: "pending",
+              reason: "insights lookup failed",
+            });
+          }
+          return;
+        }
+        const sessions = new Map(
+          result.success.map((session) => [session.session_id, session]),
+        );
+        const toGenerate: AnalysisClaim[] = [];
+        yield* Effect.forEach(claims, (claim) =>
+          Effect.gen(function* () {
+            const session = sessions.get(claim.devinSessionId);
+            if (!session) {
+              yield* repository.recordAnalysis(claim, {
+                status: "pending",
+                reason: "session missing from insights response",
+              });
+            } else if (session.analysis != null) {
+              yield* repository.recordAnalysis(claim, {
+                status: "collected",
+                analysis: session.analysis,
+              });
+              yield* Effect.logInfo("analysis.collected");
+            } else if (interpretSession(session).status === "running") {
+              yield* repository.recordAnalysis(claim, {
+                status: "pending",
+                reason: "remote session is still running",
+              });
+            } else if (session.num_devin_messages === 0) {
+              yield* repository.recordAnalysis(claim, {
+                status: "unavailable",
+                reason: "session has no Devin messages",
+              });
+              yield* Effect.logInfo("analysis.unavailable");
+            } else {
+              toGenerate.push(claim);
+            }
+          }).pipe(Effect.annotateLogs({
+            session_record_id: claim.id,
+            devin_session_id: claim.devinSessionId,
+            analysis_attempt: claim.analysisAttempts,
+          })), { discard: true });
+        yield* Effect.forEach(toGenerate, (claim) =>
+          Effect.gen(function* () {
+            const generated = yield* client.generateSessionInsights(
+              claim.devinSessionId,
+            ).pipe(Effect.result);
+            if (generated._tag === "Failure") {
+              yield* Effect.logWarning("analysis.generation_failed").pipe(
+                Effect.annotateLogs(errorFields(generated.failure)),
+              );
+            }
+            yield* repository.recordAnalysis(claim, {
+              status: "pending",
+              reason: generated._tag === "Failure"
+                ? "insights generation request failed"
+                : "waiting for analysis",
+            });
+          }).pipe(Effect.annotateLogs({
+            session_record_id: claim.id,
+            devin_session_id: claim.devinSessionId,
+            analysis_attempt: claim.analysisAttempts,
+          })), { concurrency: analysisBatchSize, discard: true });
+      }).pipe(
+        Effect.timeout("15 seconds"),
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("analysis.collection_failed").pipe(
+              Effect.annotateLogs(causeFields(cause)),
+            )
+        ),
+        observe("DevinSessionOrchestrator", "collectAnalyses"),
+      );
+
       const tick = Effect.gen(function* () {
         for (const work of yield* repository.findRunning) {
           yield* reconcile(work);
@@ -255,6 +345,7 @@ export class DevinSessionOrchestrator extends Context.Service<
           concurrency: config.devinMaxConcurrentSessions,
           discard: true,
         });
+        yield* collectAnalyses;
       }).pipe(
         Effect.tapCause((cause) =>
           Cause.hasInterrupts(cause) ? Effect.void : Effect.logError(

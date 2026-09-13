@@ -5,15 +5,17 @@ import {
   eq,
   gte,
   inArray,
+  isNotNull,
   isNull,
   lt,
+  lte,
   sql,
 } from "drizzle-orm";
 import { Context, DateTime, Effect, Layer } from "effect";
 import { AppConfig } from "./config.ts";
 import { DatabaseClient, DatabaseError } from "./database.ts";
 import { observe } from "./logging.ts";
-import type { SessionState } from "./devin.ts";
+import type { SessionAnalysis, SessionState } from "./devin.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 export type SessionRecord = typeof devinSessions.$inferSelect;
@@ -25,6 +27,15 @@ export type SessionWork = {
 export type RunningSession = SessionWork & {
   readonly session: SessionRecord & { readonly devinSessionId: string };
 };
+export type AnalysisClaim = SessionRecord & { readonly devinSessionId: string };
+export const analysisBatchSize = 3;
+
+export type AnalysisResult =
+  | { readonly status: "collected"; readonly analysis: SessionAnalysis }
+  | {
+    readonly status: "pending" | "unavailable";
+    readonly reason: string;
+  };
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const databaseError = (cause: unknown) => new DatabaseError({ cause });
@@ -85,6 +96,14 @@ export class DevinSessionRepository extends Context.Service<
       state: Extract<SessionState, { status: "succeeded" | "failed" }>,
       prNumber: number | null,
     ) => Effect.Effect<boolean, DatabaseError>;
+    readonly claimDueAnalyses: Effect.Effect<
+      ReadonlyArray<AnalysisClaim>,
+      DatabaseError
+    >;
+    readonly recordAnalysis: (
+      claim: AnalysisClaim,
+      result: AnalysisResult,
+    ) => Effect.Effect<void, DatabaseError>;
   }
 >()("devin-remediator/DevinSessionRepository") {
   static readonly layer = Layer.effect(
@@ -349,6 +368,84 @@ export class DevinSessionRepository extends Context.Service<
         (effect, work) => observeClaim("finish")(effect, work.session),
       );
 
+      const claimDueAnalyses = db.transaction((tx) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const due = and(
+            inArray(devinSessions.status, ["succeeded", "failed"]),
+            isNotNull(devinSessions.devinSessionId),
+            eq(devinSessions.analysisStatus, "pending"),
+            lte(devinSessions.analysisNextAttemptAt, DateTime.formatIso(now)),
+          );
+          yield* tx.update(devinSessions).set({
+            analysisStatus: "unavailable",
+            analysisReason:
+              sql`'Attempts exhausted: ' || coalesce(${devinSessions.analysisReason}, 'collection interrupted')`,
+          }).where(and(
+            due,
+            gte(
+              devinSessions.analysisAttempts,
+              config.devinAnalysisMaxAttempts,
+            ),
+          ));
+          const rows = yield* tx.select().from(devinSessions).where(due)
+            .orderBy(
+              asc(devinSessions.analysisNextAttemptAt),
+              asc(devinSessions.id),
+            ).limit(analysisBatchSize);
+          const claims: AnalysisClaim[] = [];
+          for (const row of rows) {
+            if (row.devinSessionId === null) continue;
+            const analysisAttempts = row.analysisAttempts + 1;
+            const analysisNextAttemptAt = DateTime.formatIso(DateTime.add(now, {
+              seconds: Math.min(
+                30 * 2 ** Math.min(row.analysisAttempts, 4),
+                300,
+              ),
+            }));
+            yield* tx.update(devinSessions).set({
+              analysisAttempts,
+              analysisNextAttemptAt,
+              analysisReason: "collection interrupted",
+            }).where(eq(devinSessions.id, row.id));
+            claims.push({
+              ...row,
+              devinSessionId: row.devinSessionId,
+              analysisAttempts,
+              analysisNextAttemptAt,
+            });
+          }
+          return claims;
+        })
+      ).pipe(
+        Effect.mapError(databaseError),
+        observe("DevinSessionRepository", "claimDueAnalyses"),
+      );
+
+      const recordAnalysis = Effect.fn("DevinSessionRepository.recordAnalysis")(
+        function* (claim: AnalysisClaim, result: AnalysisResult) {
+          yield* db.update(devinSessions).set(
+            result.status === "collected"
+              ? {
+                analysisStatus: result.status,
+                analysis: result.analysis,
+                analysisReason: null,
+              }
+              : {
+                analysisStatus: result.status,
+                analysisReason: result.reason,
+              },
+          ).where(and(
+            eq(devinSessions.id, claim.id),
+            eq(devinSessions.devinSessionId, claim.devinSessionId),
+            eq(devinSessions.analysisStatus, "pending"),
+            eq(devinSessions.analysisAttempts, claim.analysisAttempts),
+          ));
+        },
+        Effect.mapError(databaseError),
+        observeClaim("recordAnalysis"),
+      );
+
       return DevinSessionRepository.of({
         claimPending,
         claimStale,
@@ -358,6 +455,8 @@ export class DevinSessionRepository extends Context.Service<
         markSkipped,
         rejectSubmission,
         finish,
+        claimDueAnalyses,
+        recordAnalysis,
       });
     }),
   );

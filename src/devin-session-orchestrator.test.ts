@@ -19,6 +19,7 @@ import {
   DevinClient,
   DevinLookupError,
   type DevinSession,
+  type DevinSessionWithInsights,
   DevinSubmissionError,
   type SessionState,
 } from "./devin.ts";
@@ -47,10 +48,23 @@ const remote: DevinSession = {
   pull_requests: [],
 };
 
+const completedInsights = (sessionId: string): DevinSessionWithInsights => ({
+  ...remote,
+  session_id: sessionId,
+  status: "exit",
+  status_detail: "finished",
+  num_devin_messages: 2,
+  num_user_messages: 1,
+  session_size: "xs",
+  analysis: null,
+});
+
 function fakeClient() {
   const creates: Parameters<DevinClient["Service"]["createSession"]>[0][] = [];
   const gets: string[] = [];
   const lookups: string[] = [];
+  const insights: ReadonlyArray<string>[] = [];
+  const generations: string[] = [];
   const behavior = {
     findPlaybook: (): ReturnType<
       DevinClient["Service"]["findPlaybookByMacro"]
@@ -68,6 +82,14 @@ function fakeClient() {
       _tag: string,
     ): ReturnType<DevinClient["Service"]["findSessionsByTag"]> =>
       Effect.succeed([]),
+    insights: (
+      _ids: ReadonlyArray<string>,
+    ): ReturnType<DevinClient["Service"]["listSessionsWithInsights"]> =>
+      Effect.succeed([]),
+    generate: (
+      id: string,
+    ): ReturnType<DevinClient["Service"]["generateSessionInsights"]> =>
+      Effect.succeed({ session_id: id, status: "started" }),
   };
   const client = DevinClient.of({
     createPlaybook: () => behavior.createPlaybook(),
@@ -83,13 +105,23 @@ function fakeClient() {
         return behavior.get(id);
       }),
     listSessions: () => Effect.die("Orchestration must use getSession"),
+    listSessionsWithInsights: (ids) =>
+      Effect.suspend(() => {
+        insights.push(ids);
+        return behavior.insights(ids);
+      }),
+    generateSessionInsights: (id) =>
+      Effect.suspend(() => {
+        generations.push(id);
+        return behavior.generate(id);
+      }),
     findSessionsByTag: (tag) =>
       Effect.suspend(() => {
         lookups.push(tag);
         return behavior.lookup(tag);
       }),
   });
-  return { creates, gets, lookups, behavior, client };
+  return { creates, gets, lookups, insights, generations, behavior, client };
 }
 
 function testLayer(
@@ -173,6 +205,429 @@ function orchestrationTest(
     );
   });
 }
+
+Deno.test("analysis collection resumes from a reopened SQLite database without resetting backoff", async () => {
+  const directory = await Deno.makeTempDir();
+  const env = { SQLITE_DB_FILEPATH: `${directory}/restart.sqlite` };
+  const fake = fakeClient();
+  fake.behavior.insights = () =>
+    Effect.succeed([completedInsights("devin-restart")]);
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          const { db } = yield* DatabaseClient;
+          yield* seed(db, "restart", {
+            status: "succeeded",
+            devinSessionId: "devin-restart",
+            output: { outcome: "fixed", summary: "Verified." },
+          });
+          yield* (yield* DevinSessionOrchestrator).tick;
+          assert.equal((yield* row(db, "restart")).analysisAttempts, 1);
+        }).pipe(Effect.provide(testLayer(fake, env)), Effect.scoped);
+        yield* Effect.gen(function* () {
+          const { db } = yield* DatabaseClient;
+          const orchestra = yield* DevinSessionOrchestrator;
+          yield* orchestra.tick;
+          assert.equal(fake.insights.length, 1);
+          yield* TestClock.adjust("30 seconds");
+          fake.behavior.insights = () =>
+            Effect.succeed([{
+              ...completedInsights("devin-restart"),
+              analysis: { issues: [], action_items: ["Improve setup"] },
+            }]);
+          yield* orchestra.tick;
+          const saved = yield* row(db, "restart");
+          assert.equal(saved.analysisAttempts, 2);
+          assert.equal(saved.analysisStatus, "collected");
+          assert.deepEqual(saved.analysis, {
+            issues: [],
+            action_items: ["Improve setup"],
+          });
+          assert.deepEqual(fake.generations, ["devin-restart"]);
+        }).pipe(Effect.provide(testLayer(fake, env)), Effect.scoped);
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("analysis collection runs through the real Devin client and persists generated HTTP analysis", () => {
+  const requests: string[] = [];
+  let generated = false;
+  const analysis = {
+    classification: { category: "bug_fixing", confidence: 0.95 },
+    issues: [],
+    timeline: [{ title: "Verified fix", description: "Tests passed." }],
+  };
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const url = new URL(String(input));
+    requests.push(`${init?.method} ${url.pathname}`);
+    assert.equal(
+      new Headers(init?.headers).get("authorization"),
+      "Bearer test-key",
+    );
+    if (url.pathname.endsWith("/insights/generate")) {
+      assert.equal(init?.method, "POST");
+      generated = true;
+      return Promise.resolve(Response.json({
+        session_id: "devin-http-analysis",
+        status: "started",
+      }));
+    }
+    assert.equal(url.pathname, "/v3/organizations/org-test/sessions/insights");
+    assert.deepEqual(url.searchParams.getAll("session_ids"), [
+      "devin-http-analysis",
+    ]);
+    return Promise.resolve(Response.json({
+      items: [{
+        ...completedInsights("devin-http-analysis"),
+        analysis: generated ? analysis : null,
+      }],
+      has_next_page: false,
+      end_cursor: null,
+    }));
+  };
+  const live = DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(WebhookEventProcessors.layer),
+    Layer.provideMerge(DevinSessionRepository.layer),
+    Layer.provideMerge(DatabaseClient.layer),
+    Layer.provide(DevinClient.layer),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+      DEVIN_API_KEY: "test-key",
+      DEVIN_ORGANIZATION_ID: "org-test",
+      GITHUB_WEBHOOK_SECRET: "test-secret",
+      SQLITE_DB_FILEPATH: ":memory:",
+    }))),
+  );
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseClient;
+      const orchestra = yield* DevinSessionOrchestrator;
+      yield* seed(db, "http-analysis", {
+        status: "succeeded",
+        devinSessionId: "devin-http-analysis",
+        output: { outcome: "fixed", summary: "Verified." },
+      });
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "http-analysis")).analysisStatus, "pending");
+      yield* TestClock.adjust("30 seconds");
+      yield* orchestra.tick;
+      const saved = yield* row(db, "http-analysis");
+      assert.equal(saved.analysisStatus, "collected");
+      assert.deepEqual(saved.analysis, analysis);
+      assert.deepEqual(requests, [
+        "GET /v3/organizations/org-test/sessions/insights",
+        "POST /v3/organizations/org-test/sessions/devin-http-analysis/insights/generate",
+        "GET /v3/organizations/org-test/sessions/insights",
+      ]);
+    }).pipe(
+      Effect.provide(live),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+      Effect.provide(TestClock.layer()),
+      Effect.scoped,
+    ),
+  );
+});
+
+orchestrationTest(
+  "analysis generation is limited to three concurrent requests independently of remediation capacity",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      for (const id of ["a", "b", "c", "d"]) {
+        yield* seed(db, id, {
+          status: "failed",
+          devinSessionId: `devin-${id}`,
+          output: { outcome: "failed", summary: "Failed." },
+        });
+      }
+      fake.behavior.insights = (ids) =>
+        Effect.succeed(ids.map(completedInsights));
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let active = 0;
+      let maximum = 0;
+      fake.behavior.generate = (id) =>
+        Effect.gen(function* () {
+          active++;
+          maximum = Math.max(maximum, active);
+          if (active === 3) yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(release);
+          return { session_id: id, status: "started" as const };
+        }).pipe(Effect.ensuring(Effect.sync(() => {
+          active--;
+        })));
+      const tick = yield* orchestra.tick.pipe(Effect.forkScoped);
+      yield* Deferred.await(started);
+      assert.equal(fake.generations.length, 3);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(tick);
+      assert.equal(maximum, 3);
+      assert.equal(fake.generations.length, 3);
+      yield* orchestra.tick;
+      assert.equal(fake.generations.length, 4);
+      assert.equal(
+        (yield* row(db, "d")).analysisReason,
+        "waiting for analysis",
+      );
+    }).pipe(Effect.scoped),
+  { DEVIN_MAX_CONCURRENT_SESSIONS: "1" },
+);
+
+orchestrationTest(
+  "analysis collection batches finished remote sessions and preserves remediation output",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      const output = {
+        outcome: "fixed" as const,
+        summary: "Verified fix.",
+        confidence: 0.7,
+      };
+      for (const id of ["a", "b"]) {
+        yield* seed(db, id, {
+          status: id === "a" ? "succeeded" : "failed",
+          devinSessionId: `devin-${id}`,
+          output,
+          prNumber: 17,
+        });
+      }
+      yield* seed(db, "local-failure", { status: "failed", output });
+      yield* seed(db, "skipped", { status: "skipped" });
+      const before = yield* row(db, "a");
+      const analysis = {
+        classification: { category: "bug_fixing", confidence: 0.99 },
+        action_items: [],
+        future_field: ["keep", "all", "data"],
+      };
+      fake.behavior.insights = (ids) =>
+        Effect.succeed(
+          ids.map((id) => ({ ...completedInsights(id), analysis })),
+        );
+      yield* orchestra.tick;
+      yield* orchestra.tick;
+      assert.deepEqual(fake.insights, [["devin-a", "devin-b"]]);
+      assert.deepEqual(fake.generations, []);
+      for (const id of ["a", "b"]) {
+        const saved = yield* row(db, id);
+        assert.equal(saved.analysisStatus, "collected");
+        assert.deepEqual(saved.analysis, analysis);
+        assert.deepEqual(saved.output, output);
+        assert.equal(saved.prNumber, 17);
+        assert.equal(saved.status, id === "a" ? "succeeded" : "failed");
+      }
+      assert.equal((yield* row(db, "a")).updatedAt, before.updatedAt);
+      assert.equal((yield* row(db, "local-failure")).analysisAttempts, 0);
+    }),
+);
+
+orchestrationTest(
+  "slow generation cannot exhaust an already available analysis behind other sessions",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      for (const id of ["a", "b", "c", "d", "e", "f", "g"]) {
+        yield* seed(db, id, {
+          status: "succeeded",
+          devinSessionId: `devin-${id}`,
+          output: { outcome: "fixed", summary: "Verified." },
+        });
+      }
+      fake.behavior.generate = () => Effect.never;
+      for (let round = 0; round < 3; round++) {
+        const started = yield* Deferred.make<void>();
+        fake.behavior.insights = (ids) =>
+          Deferred.succeed(started, undefined).pipe(Effect.as(
+            ids.map((id) => ({
+              ...completedInsights(id),
+              analysis: id === "devin-g" ? { ready: true } : null,
+            })),
+          ));
+        const tick = yield* orchestra.tick.pipe(Effect.forkScoped);
+        yield* Effect.race(Deferred.await(started), Fiber.join(tick));
+        yield* TestClock.adjust("15 seconds");
+        yield* Fiber.join(tick);
+      }
+      const saved = yield* row(db, "g");
+      assert.equal(saved.analysisStatus, "collected");
+      assert.deepEqual(saved.analysis, { ready: true });
+      assert.equal(saved.analysisAttempts, 1);
+    }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
+  { DEVIN_ANALYSIS_MAX_ATTEMPTS: "1" },
+);
+
+orchestrationTest(
+  "missing analysis triggers generation and respects persisted exponential backoff before collection",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      yield* seed(db, "small", {
+        status: "succeeded",
+        devinSessionId: "devin-small",
+        output: { outcome: "fixed", summary: "Verified." },
+      });
+      fake.behavior.insights = () =>
+        Effect.succeed([completedInsights("devin-small")]);
+      fake.behavior.generate = (id) =>
+        Effect.succeed({ session_id: id, status: "already_exists" });
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "small")).analysisStatus, "pending");
+      assert.deepEqual(fake.generations, ["devin-small"]);
+      yield* TestClock.adjust("29 seconds");
+      yield* orchestra.tick;
+      assert.equal(fake.insights.length, 1);
+      yield* TestClock.adjust("1 second");
+      yield* orchestra.tick;
+      assert.equal(fake.insights.length, 2);
+      yield* TestClock.adjust("59 seconds");
+      yield* orchestra.tick;
+      assert.equal(fake.insights.length, 2);
+      fake.behavior.insights = () =>
+        Effect.succeed([{
+          ...completedInsights("devin-small"),
+          analysis: { issues: [], timeline: [] },
+        }]);
+      yield* TestClock.adjust("1 second");
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "small")).analysisStatus, "collected");
+      assert.equal(fake.insights.length, 3);
+      assert.deepEqual(fake.generations, ["devin-small", "devin-small"]);
+    }).pipe(Effect.provide(TestClock.layer())),
+);
+
+orchestrationTest(
+  "analysis collection skips zero-message sessions and retries missing or still-running sessions",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      for (const id of ["empty", "missing", "resumed"]) {
+        yield* seed(db, id, {
+          status: "failed",
+          devinSessionId: `devin-${id}`,
+          output: { outcome: "failed", summary: "Failed." },
+        });
+      }
+      fake.behavior.insights = () =>
+        Effect.succeed([
+          { ...completedInsights("devin-empty"), num_devin_messages: 0 },
+          {
+            ...completedInsights("devin-resumed"),
+            status: "running",
+            status_detail: "working",
+          },
+        ]);
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "empty")).analysisStatus, "unavailable");
+      assert.equal((yield* row(db, "missing")).analysisStatus, "pending");
+      assert.match((yield* row(db, "missing")).analysisReason!, /missing/);
+      assert.equal((yield* row(db, "resumed")).analysisStatus, "pending");
+      assert.deepEqual(fake.generations, []);
+    }),
+);
+
+orchestrationTest(
+  "insights failures do not block submissions and collection stops after the configured attempt limit",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      yield* seed(db, "finished", {
+        status: "succeeded",
+        devinSessionId: "devin-finished",
+        output: { outcome: "fixed", summary: "Verified." },
+      });
+      yield* seed(db, "new");
+      fake.behavior.insights = () =>
+        Effect.fail(new DevinLookupError({ cause: "503" }));
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "new")).status, "running");
+      assert.equal((yield* row(db, "finished")).status, "succeeded");
+      assert.equal((yield* row(db, "finished")).analysisStatus, "pending");
+      yield* TestClock.adjust("30 seconds");
+      fake.behavior.insights = () =>
+        Effect.succeed([completedInsights("devin-finished")]);
+      fake.behavior.generate = () =>
+        Effect.fail(new DevinLookupError({ cause: "403" }));
+      yield* orchestra.tick;
+      yield* TestClock.adjust("60 seconds");
+      yield* orchestra.tick;
+      const saved = yield* row(db, "finished");
+      assert.equal(saved.analysisStatus, "unavailable");
+      assert.equal(saved.analysisAttempts, 2);
+      assert.match(
+        saved.analysisReason!,
+        /Attempts exhausted: insights generation request failed/,
+      );
+      assert.equal(saved.analysis, null);
+      assert.deepEqual(saved.output, {
+        outcome: "fixed",
+        summary: "Verified.",
+      });
+      assert.equal(fake.insights.length, 2);
+      assert.equal(fake.generations.length, 1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  { DEVIN_ANALYSIS_MAX_ATTEMPTS: "2" },
+);
+
+orchestrationTest(
+  "analysis claims are bounded, survive abandoned work, and reject stale results",
+  ({ db, repository }) =>
+    Effect.gen(function* () {
+      for (let i = 0; i < 4; i++) {
+        yield* seed(db, `finished-${String(i).padStart(2, "0")}`, {
+          status: "succeeded",
+          devinSessionId: `devin-${i}`,
+          output: { outcome: "fixed", summary: "Verified." },
+        });
+      }
+      const first = yield* repository.claimDueAnalyses;
+      assert.equal(first.length, 3);
+      const second = yield* repository.claimDueAnalyses;
+      assert.equal(second.length, 1);
+      assert.deepEqual(yield* repository.claimDueAnalyses, []);
+      yield* TestClock.adjust("30 seconds");
+      const recovered = yield* repository.claimDueAnalyses;
+      assert.equal(recovered.length, 3);
+      assert.equal(recovered[0].id, first[0].id);
+      assert.equal(recovered[0].analysisAttempts, 2);
+      yield* repository.recordAnalysis(first[0], {
+        status: "collected",
+        analysis: { obsolete: true },
+      });
+      assert.equal((yield* row(db, first[0].id)).analysis, null);
+      yield* repository.recordAnalysis(recovered[0], {
+        status: "collected",
+        analysis: { current: true },
+      });
+      yield* repository.recordAnalysis(first[0], {
+        status: "unavailable",
+        reason: "stale error",
+      });
+      assert.deepEqual((yield* row(db, first[0].id)).analysis, {
+        current: true,
+      });
+      assert.equal((yield* row(db, first[0].id)).analysisStatus, "collected");
+    }).pipe(Effect.provide(TestClock.layer())),
+);
+
+orchestrationTest(
+  "analysis collection timeout leaves retryable work without hanging the tick",
+  ({ db, orchestra, fake }) =>
+    Effect.gen(function* () {
+      yield* seed(db, "timeout", {
+        status: "succeeded",
+        devinSessionId: "devin-timeout",
+        output: { outcome: "fixed", summary: "Verified." },
+      });
+      const started = yield* Deferred.make<void>();
+      fake.behavior.insights = () =>
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never));
+      const tick = yield* orchestra.tick.pipe(Effect.forkScoped);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("15 seconds");
+      yield* Fiber.join(tick);
+      const saved = yield* row(db, "timeout");
+      assert.equal(saved.analysisStatus, "pending");
+      assert.equal(saved.analysisAttempts, 1);
+      assert.equal(saved.status, "succeeded");
+      assert.equal(saved.analysisReason, "collection interrupted");
+    }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
+);
 
 Deno.test("issue processing recovers a lost HTTP creation response through paginated tag lookup", async () => {
   let posts = 0;
@@ -475,7 +930,7 @@ orchestrationTest(
 );
 
 orchestrationTest(
-  "terminal rows remain unchanged and a remote terminal failure is not retried",
+  "terminal remediation results remain unchanged and a remote terminal failure is not retried",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
       yield* seed(db, "success", {
@@ -502,7 +957,23 @@ orchestrationTest(
         });
       yield* orchestra.tick;
       yield* orchestra.tick;
-      assert.deepEqual(yield* row(db, "success"), success);
+      const saved = yield* row(db, "success");
+      for (
+        const field of [
+          "status",
+          "output",
+          "devinSessionId",
+          "prNumber",
+          "attempts",
+          "claimVersion",
+          "recoveryEmptyChecks",
+          "recoveryBlocked",
+          "insertedAt",
+          "updatedAt",
+        ] as const
+      ) {
+        assert.deepEqual(saved[field], success[field], field);
+      }
       assert.deepEqual(yield* row(db, "failed"), failure);
       assert.equal((yield* row(db, "running")).status, "failed");
       assert.deepEqual(fake.gets, ["failure"]);

@@ -12,6 +12,7 @@ export const AppConfig = Config.all({
   devinOrganizationId: Config.String("DEVIN_ORGANIZATION_ID"),
   devinMaxConcurrentSessions: positiveInt("DEVIN_MAX_CONCURRENT_SESSIONS", 3),
   devinMaxAttempts: positiveInt("DEVIN_MAX_ATTEMPTS", 3),
+  devinAnalysisMaxAttempts: positiveInt("DEVIN_ANALYSIS_MAX_ATTEMPTS", 12),
   devinOrchestratorIntervalMs: positiveInt(
     "DEVIN_ORCHESTRATOR_INTERVAL_MS",
     3000,

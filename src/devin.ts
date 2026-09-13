@@ -142,6 +142,18 @@ export const DevinSession = Schema.Struct({
 
 export type DevinSession = typeof DevinSession.Type;
 
+export const SessionAnalysis = Schema.JsonObject;
+export type SessionAnalysis = typeof SessionAnalysis.Type;
+
+export const DevinSessionWithInsights = Schema.Struct({
+  ...DevinSession.fields,
+  num_devin_messages: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  num_user_messages: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  session_size: Schema.Literals(["xs", "s", "m", "l", "xl"]),
+  analysis: Schema.optional(Schema.NullOr(SessionAnalysis)),
+});
+export type DevinSessionWithInsights = typeof DevinSessionWithInsights.Type;
+
 export type SessionState =
   & {
     readonly pullRequestUrls: ReadonlyArray<string>;
@@ -252,6 +264,17 @@ const RecoverySessionPage = Schema.Struct({
   end_cursor: Schema.NullOr(Schema.NonEmptyString),
 });
 
+const InsightsPage = Schema.Struct({
+  items: Schema.Array(DevinSessionWithInsights),
+  has_next_page: Schema.optional(Schema.Boolean),
+  end_cursor: Schema.optional(Schema.NullOr(Schema.NonEmptyString)),
+});
+
+const InsightsGeneration = Schema.Struct({
+  session_id: Schema.NonEmptyString,
+  status: Schema.Literals(["started", "already_exists"]),
+});
+
 const PlaybookPage = Schema.Struct({
   items: Schema.Array(DevinPlaybook),
   has_next_page: Schema.optional(Schema.Boolean),
@@ -298,6 +321,12 @@ export class DevinClient extends Context.Service<DevinClient, {
     ReadonlyArray<DevinSession>,
     DevinLookupError
   >;
+  readonly listSessionsWithInsights: (
+    sessionIds: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<DevinSessionWithInsights>, DevinLookupError>;
+  readonly generateSessionInsights: (
+    sessionId: string,
+  ) => Effect.Effect<typeof InsightsGeneration.Type, DevinLookupError>;
 }>()("devin-remediator/DevinClient") {
   static readonly layer = Layer.effect(
     DevinClient,
@@ -486,6 +515,75 @@ export class DevinClient extends Context.Service<DevinClient, {
           effect.pipe(Effect.annotateLogs({ delivery_tag: tag })),
       );
 
+      const listSessionsWithInsights = Effect.fn(
+        "DevinClient.listSessionsWithInsights",
+      )(
+        function* (sessionIds: ReadonlyArray<string>) {
+          const ids = yield* decodeSessionIds(sessionIds);
+          if (ids.length === 0) return [];
+          const requested = new Set(ids);
+          const matches = new Map<string, DevinSessionWithInsights>();
+          let after: string | undefined;
+          const cursors = new Set<string>();
+          do {
+            const page = yield* client.get("/sessions/insights", {
+              urlParams: {
+                session_ids: ids,
+                first: 200,
+                ...(after === undefined ? {} : { after }),
+              },
+            }).pipe(
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(InsightsPage)),
+            );
+            for (const session of page.items) {
+              if (requested.has(session.session_id)) {
+                matches.set(session.session_id, session);
+              }
+            }
+            if (!page.has_next_page) break;
+            if (page.end_cursor == null || cursors.has(page.end_cursor)) {
+              return yield* new DevinLookupError({
+                cause: "Incomplete insights lookup: missing or repeated cursor",
+              });
+            }
+            after = page.end_cursor;
+            cursors.add(after);
+          } while (true);
+          return [...matches.values()];
+        },
+        Effect.timeout("10 seconds"),
+        Effect.mapError((cause) => new DevinLookupError({ cause })),
+        observeClient("listSessionsWithInsights"),
+      );
+
+      const generateSessionInsights = Effect.fn(
+        "DevinClient.generateSessionInsights",
+      )(
+        (sessionId: string) =>
+          client.post(
+            `/sessions/${encodeURIComponent(sessionId)}/insights/generate`,
+          ).pipe(
+            Effect.flatMap(
+              HttpClientResponse.schemaBodyJson(InsightsGeneration),
+            ),
+            Effect.flatMap((response) =>
+              response.session_id === sessionId
+                ? Effect.succeed(response)
+                : Effect.fail(
+                  new DevinLookupError({
+                    cause:
+                      "Insights generation returned a different session ID",
+                  }),
+                )
+            ),
+          ),
+        Effect.timeout("10 seconds"),
+        Effect.mapError((cause) => new DevinLookupError({ cause })),
+        observeClient("generateSessionInsights"),
+        (effect, sessionId) =>
+          effect.pipe(Effect.annotateLogs({ devin_session_id: sessionId })),
+      );
+
       return DevinClient.of({
         createPlaybook,
         findPlaybookByMacro,
@@ -493,6 +591,8 @@ export class DevinClient extends Context.Service<DevinClient, {
         getSession,
         listSessions,
         findSessionsByTag,
+        listSessionsWithInsights,
+        generateSessionInsights,
       });
     }),
   ).pipe(Layer.provide(FetchHttpClient.layer));
