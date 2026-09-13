@@ -96,7 +96,11 @@ sequenceDiagram
 The durable queue survives restarts. Transient submission failures retry within
 an attempt limit; uncertain submissions are checked by delivery tag before
 retrying. Sealing records the session's terminal result locally, not whether the
-bug was fixed. The structured remediation output captures that outcome.
+bug was fixed. The structured remediation output captures Devin's work:
+`fix_proposed` means a new fix was implemented, verified, and submitted as a PR,
+not that it was merged. Routine review and merge belong in `next_action`, not
+`blocker`. `needs_human` means implementation or verification needs human input
+or a decision, or a security issue needs escalation.
 
 ## Observability
 

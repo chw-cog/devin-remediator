@@ -1,7 +1,7 @@
 import { JsonSchema, Schema } from "effect";
 
 export const RemediationOutcome = Schema.Literals([
-  "fixed",
+  "fix_proposed",
   "needs_human",
   "not_reproducible",
   "failed",
@@ -15,7 +15,7 @@ const NonBlankString = Schema.NonEmptyString.check(Schema.isPattern(/\S/));
 export const RemediationOutput = Schema.Struct({
   outcome: RemediationOutcome.annotate({
     description:
-      "fixed: a new safe fix is verified; needs_human: blocked or a decision/input is needed; not_reproducible: investigation could not reproduce the reported bug; failed: remediation was attempted but could not be completed; already_resolved: an existing fix is verified to resolve the issue, without new remediation. An unmerged PR alone is not already_resolved.",
+      "fix_proposed: a new safe fix is implemented, verified, and submitted as a PR; merging is not required. needs_human: human input or a decision is required to complete implementation or verification, or security escalation is needed; routine PR review and merge are not blockers. not_reproducible: investigation could not reproduce the reported bug; failed: remediation was attempted but could not be completed; already_resolved: an existing fix is verified to resolve the issue, without new remediation. An unmerged PR alone is not already_resolved.",
   }),
   summary: NonBlankString.annotate({
     description:
@@ -33,11 +33,12 @@ export const RemediationOutput = Schema.Struct({
     }),
   })),
   blocker: Schema.optionalKey(Schema.NullOr(NonBlankString)).annotate({
-    description: "What prevents completion or verification; null if nothing.",
+    description:
+      "What prevents implementation or verification; null if nothing. Routine PR review and merge are not blockers.",
   }),
   next_action: Schema.optionalKey(Schema.NullOr(NonBlankString)).annotate({
     description:
-      "The smallest concrete next step and who needs to take it; null if no action remains.",
+      "The smallest concrete next step and who needs to take it; for fix_proposed, identify the maintainer review and merge step. Use null if no action remains.",
   }),
   confidence: Schema.optionalKey(
     Schema.Finite.check(

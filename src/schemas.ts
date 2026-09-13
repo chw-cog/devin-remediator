@@ -78,6 +78,6 @@ export const devinSessions = sqliteTable("devin_sessions", {
   ),
   check(
     "devin_sessions_output_check",
-    sql`(${table.status} IN ('succeeded', 'failed') AND ${table.output} IS NOT NULL AND CASE WHEN json_valid(${table.output}) THEN json_type(${table.output}) = 'object' AND json_type(${table.output}, '$.outcome') IS 'text' AND json_extract(${table.output}, '$.outcome') IN ('fixed', 'needs_human', 'not_reproducible', 'failed', 'already_resolved') AND json_type(${table.output}, '$.summary') IS 'text' AND length(trim(json_extract(${table.output}, '$.summary'))) > 0 ELSE 0 END) OR (${table.status} NOT IN ('succeeded', 'failed') AND ${table.output} IS NULL)`,
+    sql`(${table.status} IN ('succeeded', 'failed') AND ${table.output} IS NOT NULL AND CASE WHEN json_valid(${table.output}) THEN json_type(${table.output}) = 'object' AND json_type(${table.output}, '$.outcome') IS 'text' AND json_extract(${table.output}, '$.outcome') IN ('fix_proposed', 'needs_human', 'not_reproducible', 'failed', 'already_resolved') AND json_type(${table.output}, '$.summary') IS 'text' AND length(trim(json_extract(${table.output}, '$.summary'))) > 0 ELSE 0 END) OR (${table.status} NOT IN ('succeeded', 'failed') AND ${table.output} IS NULL)`,
   ),
 ]);

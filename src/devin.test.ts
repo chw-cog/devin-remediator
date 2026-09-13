@@ -1018,7 +1018,7 @@ Deno.test("listed sessions validate terminal outcomes and ignore intermediate ou
   ) {
     for (
       const outcome of [
-        "fixed",
+        "fix_proposed",
         "needs_human",
         "not_reproducible",
         "failed",
@@ -1056,15 +1056,16 @@ Deno.test("listed sessions validate terminal outcomes and ignore intermediate ou
         [],
         {},
         { outcome: "unknown", summary: "Result" },
-        { outcome: "fixed" },
-        { outcome: "fixed", summary: "" },
-        { outcome: "fixed", summary: " \n\t" },
-        { outcome: "fixed", summary: 123 },
-        { outcome: "fixed", summary: "Result", confidence: -0.1 },
-        { outcome: "fixed", summary: "Result", confidence: 1.1 },
-        { outcome: "fixed", summary: "Result", confidence: "high" },
-        { outcome: "fixed", summary: "Result", confidence: null },
-        { outcome: "fixed", summary: "Result", extra: true },
+        { outcome: "fixed", summary: "Legacy outcome" },
+        { outcome: "fix_proposed" },
+        { outcome: "fix_proposed", summary: "" },
+        { outcome: "fix_proposed", summary: " \n\t" },
+        { outcome: "fix_proposed", summary: 123 },
+        { outcome: "fix_proposed", summary: "Result", confidence: -0.1 },
+        { outcome: "fix_proposed", summary: "Result", confidence: 1.1 },
+        { outcome: "fix_proposed", summary: "Result", confidence: "high" },
+        { outcome: "fix_proposed", summary: "Result", confidence: null },
+        { outcome: "fix_proposed", summary: "Result", extra: true },
       ]
     ) {
       const result = await runWithFetch(

@@ -220,7 +220,7 @@ Deno.test("analysis collection resumes from a reopened SQLite database without r
           yield* seed(db, "restart", {
             status: "succeeded",
             devinSessionId: "devin-restart",
-            output: { outcome: "fixed", summary: "Verified." },
+            output: { outcome: "fix_proposed", summary: "Verified." },
           });
           yield* (yield* DevinSessionOrchestrator).tick;
           assert.equal((yield* row(db, "restart")).analysisAttempts, 1);
@@ -308,7 +308,7 @@ Deno.test("analysis collection runs through the real Devin client and persists g
       yield* seed(db, "http-analysis", {
         status: "succeeded",
         devinSessionId: "devin-http-analysis",
-        output: { outcome: "fixed", summary: "Verified." },
+        output: { outcome: "fix_proposed", summary: "Verified." },
       });
       yield* orchestra.tick;
       assert.equal((yield* row(db, "http-analysis")).analysisStatus, "pending");
@@ -380,7 +380,7 @@ orchestrationTest(
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
       const output = {
-        outcome: "fixed" as const,
+        outcome: "fix_proposed" as const,
         summary: "Verified fix.",
         confidence: 0.7,
       };
@@ -429,7 +429,7 @@ orchestrationTest(
         yield* seed(db, id, {
           status: "succeeded",
           devinSessionId: `devin-${id}`,
-          output: { outcome: "fixed", summary: "Verified." },
+          output: { outcome: "fix_proposed", summary: "Verified." },
         });
       }
       fake.behavior.generate = () => Effect.never;
@@ -462,7 +462,7 @@ orchestrationTest(
       yield* seed(db, "small", {
         status: "succeeded",
         devinSessionId: "devin-small",
-        output: { outcome: "fixed", summary: "Verified." },
+        output: { outcome: "fix_proposed", summary: "Verified." },
       });
       fake.behavior.insights = () =>
         Effect.succeed([completedInsights("devin-small")]);
@@ -529,7 +529,7 @@ orchestrationTest(
       yield* seed(db, "finished", {
         status: "succeeded",
         devinSessionId: "devin-finished",
-        output: { outcome: "fixed", summary: "Verified." },
+        output: { outcome: "fix_proposed", summary: "Verified." },
       });
       yield* seed(db, "new");
       fake.behavior.insights = () =>
@@ -555,7 +555,7 @@ orchestrationTest(
       );
       assert.equal(saved.analysis, null);
       assert.deepEqual(saved.output, {
-        outcome: "fixed",
+        outcome: "fix_proposed",
         summary: "Verified.",
       });
       assert.equal(fake.insights.length, 2);
@@ -572,7 +572,7 @@ orchestrationTest(
         yield* seed(db, `finished-${String(i).padStart(2, "0")}`, {
           status: "succeeded",
           devinSessionId: `devin-${i}`,
-          output: { outcome: "fixed", summary: "Verified." },
+          output: { outcome: "fix_proposed", summary: "Verified." },
         });
       }
       const first = yield* repository.claimDueAnalyses;
@@ -612,7 +612,7 @@ orchestrationTest(
       yield* seed(db, "timeout", {
         status: "succeeded",
         devinSessionId: "devin-timeout",
-        output: { outcome: "fixed", summary: "Verified." },
+        output: { outcome: "fix_proposed", summary: "Verified." },
       });
       const started = yield* Deferred.make<void>();
       fake.behavior.insights = () =>
@@ -676,7 +676,7 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
               status: "exit",
               status_detail: "finished",
               structured_output: {
-                outcome: "fixed",
+                outcome: "fix_proposed",
                 summary: "Regression test passes; PR opened.",
                 verification: {
                   status: "passed",
@@ -723,7 +723,7 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
       const saved = yield* row(db, "http");
       assert.equal(saved.status, "succeeded");
       assert.deepEqual(saved.output, {
-        outcome: "fixed",
+        outcome: "fix_proposed",
         summary: "Regression test passes; PR opened.",
         verification: { status: "passed", evidence: ["deno test: passed"] },
         blocker: null,
@@ -916,7 +916,10 @@ orchestrationTest(
               session_id,
               status: "exit" as const,
               status_detail: "finished" as const,
-              structured_output: { outcome: "fixed", summary: session_id },
+              structured_output: {
+                outcome: "fix_proposed",
+                summary: session_id,
+              },
             })),
           );
       yield* orchestra.tick;
@@ -931,7 +934,7 @@ orchestrationTest(
       const completed = fake.lists[1][0];
       assert.equal((yield* row(db, completed)).status, "succeeded");
       assert.deepEqual((yield* row(db, completed)).output, {
-        outcome: "fixed",
+        outcome: "fix_proposed",
         summary: completed,
       });
       assert.equal((yield* row(db, "pending")).status, "running");
@@ -941,7 +944,10 @@ orchestrationTest(
       for (const id of ids) {
         const saved = yield* row(db, id);
         assert.equal(saved.status, "succeeded");
-        assert.deepEqual(saved.output, { outcome: "fixed", summary: id });
+        assert.deepEqual(saved.output, {
+          outcome: "fix_proposed",
+          summary: id,
+        });
       }
     }),
   { DEVIN_MAX_CONCURRENT_SESSIONS: "201" },
@@ -977,7 +983,10 @@ Deno.test("polling reconciles paginated list responses through the real client w
             session_id: "done",
             status: "exit",
             status_detail: "finished",
-            structured_output: { outcome: "fixed", summary: "Verified fix." },
+            structured_output: {
+              outcome: "fix_proposed",
+              summary: "Verified fix.",
+            },
             pull_requests: [{
               pr_url: "https://github.com/owner/repo/pull/42",
               pr_state: "open",
@@ -1019,7 +1028,7 @@ Deno.test("polling reconciles paginated list responses through the real client w
       assert.equal(done.status, "succeeded");
       assert.equal(done.prNumber, 42);
       assert.deepEqual(done.output, {
-        outcome: "fixed",
+        outcome: "fix_proposed",
         summary: "Verified fix.",
       });
       assert.deepEqual(yield* row(db, "running"), running);
@@ -1033,7 +1042,7 @@ Deno.test("polling reconciles paginated list responses through the real client w
 });
 
 orchestrationTest(
-  "completion persists the matching repository PR and frees capacity in the same tick",
+  "a verified open PR persists fix_proposed without waiting for merge and frees capacity",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
       yield* seed(db, "running", {
@@ -1047,7 +1056,13 @@ orchestrationTest(
           session_id: "existing",
           status: "exit",
           status_detail: "finished",
-          structured_output: { outcome: "fixed", summary: "Verified fix." },
+          structured_output: {
+            outcome: "fix_proposed",
+            summary: "Verified fix.",
+            verification: { status: "passed", evidence: ["deno test: passed"] },
+            blocker: null,
+            next_action: "Maintainer: review and merge PR #42.",
+          },
           pull_requests: [
             {
               pr_url: "https://github.com/unrelated/repo/pull/12",
@@ -1063,8 +1078,11 @@ orchestrationTest(
       assert.deepEqual(fake.lists, [["existing"]]);
       assert.equal((yield* row(db, "running")).status, "succeeded");
       assert.deepEqual((yield* row(db, "running")).output, {
-        outcome: "fixed",
+        outcome: "fix_proposed",
         summary: "Verified fix.",
+        verification: { status: "passed", evidence: ["deno test: passed"] },
+        blocker: null,
+        next_action: "Maintainer: review and merge PR #42.",
       });
       assert.equal((yield* row(db, "running")).prNumber, 42);
       assert.equal((yield* row(db, "pending")).status, "running");
@@ -1079,7 +1097,7 @@ orchestrationTest(
     Effect.gen(function* () {
       yield* seed(db, "success", {
         status: "succeeded",
-        output: { outcome: "fixed", summary: "Verified fix." },
+        output: { outcome: "fix_proposed", summary: "Verified fix." },
         devinSessionId: "success",
         prNumber: 17,
       });
@@ -1356,7 +1374,7 @@ for (
 
 for (
   const outcome of [
-    "fixed",
+    "fix_proposed",
     "needs_human",
     "not_reproducible",
     "failed",
@@ -1659,7 +1677,10 @@ Deno.test("restart reopens SQLite and reconciles the existing remote session wit
         session_id: "existing-session",
         status: "exit",
         status_detail: "finished",
-        structured_output: { outcome: "fixed", summary: "Verified fix." },
+        structured_output: {
+          outcome: "fix_proposed",
+          summary: "Verified fix.",
+        },
       }]);
     await Effect.runPromise(
       Effect.gen(function* () {

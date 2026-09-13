@@ -1,7 +1,11 @@
 import { strict as assert } from "node:assert";
 import { fileURLToPath } from "node:url";
+import { createClient } from "@libsql/client";
+import * as LibsqlClient from "@effect/sql-libsql/LibsqlClient";
+import * as Drizzle from "drizzle-orm/effect-libsql";
 import { migrate } from "drizzle-orm/effect-libsql/migrator";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
+import * as Reactivity from "effect/unstable/reactivity/Reactivity";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import { type AppDatabase, DatabaseClient } from "./database.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
@@ -53,7 +57,7 @@ databaseTest(
         id: "analysis-row",
         githubDeliveryId: delivery.deliveryId,
         status: "succeeded",
-        output: { outcome: "fixed", summary: "Verified." },
+        output: { outcome: "fix_proposed", summary: "Verified." },
         devinSessionId: "devin-analysis",
         insertedAt,
         updatedAt: insertedAt,
@@ -83,7 +87,7 @@ databaseTest(
         future_field: { preserved: true },
       });
       assert.deepEqual(saved?.output, {
-        outcome: "fixed",
+        outcome: "fix_proposed",
         summary: "Verified.",
       });
     }),
@@ -228,7 +232,7 @@ databaseTest(
         for (
           const outcome of [
             null,
-            "fixed",
+            "fix_proposed",
             "needs_human",
             "not_reproducible",
             "failed",
@@ -267,15 +271,16 @@ databaseTest(
           "invalid json",
           "null",
           "[]",
-          '"fixed"',
+          '"fix_proposed"',
           "{}",
-          '{"outcome":"fixed"}',
+          '{"outcome":"fix_proposed"}',
           '{"summary":"Result"}',
           '{"outcome":null,"summary":"Result"}',
-          '{"outcome":"fixed","summary":null}',
-          '{"outcome":"fixed","summary":42}',
-          '{"outcome":"fixed","summary":""}',
-          '{"outcome":"fixed","summary":" "}',
+          '{"outcome":"fix_proposed","summary":null}',
+          '{"outcome":"fix_proposed","summary":42}',
+          '{"outcome":"fix_proposed","summary":""}',
+          '{"outcome":"fix_proposed","summary":" "}',
+          '{"outcome":"fixed","summary":"Legacy outcome"}',
         ]
       ) {
         yield* assertSqlFailure(
@@ -294,7 +299,7 @@ databaseTest(
 );
 
 databaseTest(
-  "reapplying the initial migration preserves results, analyses, and recovery state",
+  "reapplying migrations preserves results, analyses, and recovery state",
   (db) =>
     Effect.gen(function* () {
       const cases = [
@@ -302,7 +307,7 @@ databaseTest(
         ["submitting", null],
         ["running", null],
         ["skipped", null],
-        ["succeeded", "fixed"],
+        ["succeeded", "fix_proposed"],
         ["succeeded", "needs_human"],
         ["succeeded", "not_reproducible"],
         ["succeeded", "already_resolved"],
@@ -382,6 +387,113 @@ databaseTest(
       );
     }),
 );
+
+Deno.test("outcome migration renames legacy fixed results and preserves all other session data", async () => {
+  const folder = await Deno.makeTempDir();
+  const initial = "20260913135033_initial";
+  const client = createClient({ url: "file::memory:" });
+  try {
+    await Deno.mkdir(`${folder}/${initial}`);
+    await Deno.copyFile(
+      new URL(`../migrations/${initial}/migration.sql`, import.meta.url),
+      `${folder}/${initial}/migration.sql`,
+    );
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* LibsqlClient.make({ liveClient: client });
+        const db = yield* Drizzle.makeWithDefaults().pipe(
+          Effect.provideService(LibsqlClient.LibsqlClient, sql),
+        );
+        yield* sql`PRAGMA foreign_keys = ON`;
+        yield* migrate(db, { migrationsFolder: folder });
+        const cases = [
+          ["pending", null],
+          ["submitting", null],
+          ["running", null],
+          ["skipped", null],
+          ["succeeded", "fixed"],
+          ["succeeded", "needs_human"],
+          ["succeeded", "not_reproducible"],
+          ["succeeded", "already_resolved"],
+          ["failed", "failed"],
+        ] as const;
+        for (const [index, [status, outcome]] of cases.entries()) {
+          const id = `legacy-${index}`;
+          yield* db.insert(githubWebhookDeliveries).values({
+            ...delivery,
+            id,
+            deliveryId: id,
+          });
+          yield* sql.unsafe(
+            `INSERT INTO devin_sessions
+              (id, github_delivery_id, status, output, analysis, analysis_status,
+               analysis_attempts, analysis_next_attempt_at, analysis_reason,
+               devin_session_id, pr_number, attempts, claim_version,
+               recovery_empty_checks, recovery_blocked, inserted_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?, ?, 42, 3, 9, 2, 1, ?, ?)`,
+            [
+              id,
+              id,
+              status,
+              outcome === null ? null : JSON.stringify({
+                outcome,
+                summary: "The word fixed in evidence must stay fixed.",
+                verification: {
+                  status: "passed",
+                  evidence: ["deno test: passed"],
+                },
+                blocker: null,
+                next_action: "Maintainer: review and merge PR #42.",
+                confidence: 0.9,
+              }),
+              outcome === null ? null : '{"timeline":[],"extra":{"kept":true}}',
+              outcome === null ? "pending" : "collected",
+              insertedAt,
+              "Preserve analysis reason",
+              `devin-${id}`,
+              insertedAt,
+              insertedAt,
+            ],
+          );
+        }
+        const before = yield* sql`SELECT * FROM devin_sessions ORDER BY id`;
+        const deliveries = yield* db.select().from(githubWebhookDeliveries);
+        const migrationsFolder = fileURLToPath(
+          new URL("../migrations", import.meta.url),
+        );
+        yield* migrate(db, { migrationsFolder });
+        const expected = before.map((row) => {
+          if (typeof row.output !== "string") return row;
+          const output = JSON.parse(row.output);
+          return output.outcome === "fixed"
+            ? {
+              ...row,
+              output: JSON.stringify({ ...output, outcome: "fix_proposed" }),
+            }
+            : row;
+        });
+        assert.deepEqual(
+          yield* sql`SELECT * FROM devin_sessions ORDER BY id`,
+          expected,
+        );
+        yield* migrate(db, { migrationsFolder });
+        assert.deepEqual(
+          yield* sql`SELECT * FROM devin_sessions ORDER BY id`,
+          expected,
+        );
+        assert.deepEqual(
+          yield* db.select().from(githubWebhookDeliveries),
+          deliveries,
+        );
+        assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
+        assert.equal((yield* sql`PRAGMA foreign_keys`)[0].foreign_keys, 1);
+      }).pipe(Effect.scoped, Effect.provide(Reactivity.layer)),
+    );
+  } finally {
+    client.close();
+    await Deno.remove(folder, { recursive: true });
+  }
+});
 
 Deno.test("DatabaseClient.layer closes the connection after success", async () => {
   const db = await Effect.runPromise(

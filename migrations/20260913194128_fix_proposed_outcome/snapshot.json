@@ -1,0 +1,367 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "3b602b26-1dcb-4773-a16b-8131ae60eb77",
+  "prevIds": [
+    "c2be20ee-7f99-49a6-b2be-0cea61606503"
+  ],
+  "ddl": [
+    {
+      "name": "devin_sessions",
+      "entityType": "tables"
+    },
+    {
+      "name": "github_webhook_deliveries",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "github_delivery_id",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "output",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "analysis",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'pending'",
+      "generated": null,
+      "name": "analysis_status",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "analysis_attempts",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'1970-01-01T00:00:00.000Z'",
+      "generated": null,
+      "name": "analysis_next_attempt_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "analysis_reason",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "devin_session_id",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "pr_number",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "attempts",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "claim_version",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "recovery_empty_checks",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "recovery_blocked",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "inserted_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_id",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_name",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "repo",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "issue_number",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "inserted_at",
+      "entityType": "columns",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "columns": [
+        "github_delivery_id"
+      ],
+      "tableTo": "github_webhook_deliveries",
+      "columnsTo": [
+        "delivery_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_devin_sessions_github_delivery_id_github_webhook_deliveries_delivery_id_fk",
+      "entityType": "fks",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "devin_sessions_pk",
+      "entityType": "pks",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "github_webhook_deliveries_pk",
+      "entityType": "pks",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "columns": [
+        {
+          "value": "analysis_status",
+          "isExpression": false
+        },
+        {
+          "value": "analysis_next_attempt_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "devin_sessions_analysis_due_idx",
+      "entityType": "indexes",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "github_delivery_id"
+      ],
+      "nameExplicit": false,
+      "name": "devin_sessions_github_delivery_id_unique",
+      "entityType": "uniques",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "devin_session_id"
+      ],
+      "nameExplicit": false,
+      "name": "devin_sessions_devin_session_id_unique",
+      "entityType": "uniques",
+      "table": "devin_sessions"
+    },
+    {
+      "columns": [
+        "delivery_id"
+      ],
+      "nameExplicit": false,
+      "name": "github_webhook_deliveries_delivery_id_unique",
+      "entityType": "uniques",
+      "table": "github_webhook_deliveries"
+    },
+    {
+      "value": "\"status\" IN ('pending', 'submitting', 'running', 'succeeded', 'failed', 'skipped')",
+      "name": "devin_sessions_status_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "\"attempts\" >= 0",
+      "name": "devin_sessions_attempts_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "\"analysis_attempts\" >= 0",
+      "name": "devin_sessions_analysis_attempts_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "(\"analysis_status\" = 'collected' AND \"analysis\" IS NOT NULL AND CASE WHEN json_valid(\"analysis\") THEN json_type(\"analysis\") = 'object' ELSE 0 END) OR (\"analysis_status\" IN ('pending', 'unavailable') AND \"analysis\" IS NULL)",
+      "name": "devin_sessions_analysis_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    },
+    {
+      "value": "(\"status\" IN ('succeeded', 'failed') AND \"output\" IS NOT NULL AND CASE WHEN json_valid(\"output\") THEN json_type(\"output\") = 'object' AND json_type(\"output\", '$.outcome') IS 'text' AND json_extract(\"output\", '$.outcome') IN ('fix_proposed', 'needs_human', 'not_reproducible', 'failed', 'already_resolved') AND json_type(\"output\", '$.summary') IS 'text' AND length(trim(json_extract(\"output\", '$.summary'))) > 0 ELSE 0 END) OR (\"status\" NOT IN ('succeeded', 'failed') AND \"output\" IS NULL)",
+      "name": "devin_sessions_output_check",
+      "entityType": "checks",
+      "table": "devin_sessions"
+    }
+  ],
+  "renames": []
+}

@@ -282,7 +282,7 @@ If you cannot establish the bug or verify a safe fix, stop and return the eviden
     assert.equal(schema.additionalProperties, false);
     assert.equal(schema.properties.outcome.type, "string");
     assert.deepEqual(schema.properties.outcome.enum, [
-      "fixed",
+      "fix_proposed",
       "needs_human",
       "not_reproducible",
       "failed",
@@ -316,6 +316,21 @@ If you cannot establish the bug or verify a safe fix, stop and return the eviden
       );
     }
     assert.match(body.prompt, /Include verification/);
+    for (
+      const text of [
+        body.prompt,
+        schema.properties.outcome.description,
+      ]
+    ) {
+      assert.match(
+        text,
+        /new safe fix is implemented, verified, and submitted as a PR/,
+      );
+      assert.match(text, /merging is not required/);
+      assert.match(text, /routine PR review and merge are not blockers/i);
+      assert.doesNotMatch(text, /an unmerged PR needing review/);
+    }
+    assert.match(body.prompt, /use blocker null and next_action/);
     assert.match(
       body.prompt,
       /already_resolved only when an existing fix is verified/,
