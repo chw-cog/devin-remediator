@@ -13,6 +13,10 @@ export const AppConfig = Config.all({
   devinMaxConcurrentSessions: positiveInt("DEVIN_MAX_CONCURRENT_SESSIONS", 3),
   devinMaxAttempts: positiveInt("DEVIN_MAX_ATTEMPTS", 3),
   devinAnalysisMaxAttempts: positiveInt("DEVIN_ANALYSIS_MAX_ATTEMPTS", 12),
+  devinRetainedPollIntervalMs: positiveInt(
+    "DEVIN_RETAINED_POLL_INTERVAL_MS",
+    60000,
+  ),
   devinOrchestratorIntervalMs: positiveInt(
     "DEVIN_ORCHESTRATOR_INTERVAL_MS",
     3000,

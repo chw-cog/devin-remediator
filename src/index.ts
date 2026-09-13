@@ -38,24 +38,25 @@ export const runApplication = (
     yield* Effect.promise(() => server.finished);
   })).pipe(Effect.annotateLogs({ component: "Application" }));
 
+export const applicationEnvironment = (
+  get: (name: string) => string | undefined,
+) =>
+  Object.fromEntries([
+    "LOG_LEVEL",
+    "DEVIN_API_KEY",
+    "DEVIN_ORGANIZATION_ID",
+    "DEVIN_MAX_CONCURRENT_SESSIONS",
+    "DEVIN_MAX_ATTEMPTS",
+    "DEVIN_ANALYSIS_MAX_ATTEMPTS",
+    "DEVIN_RETAINED_POLL_INTERVAL_MS",
+    "DEVIN_ORCHESTRATOR_INTERVAL_MS",
+    "DEVIN_SUBMITTING_TIMEOUT_SECONDS",
+    "GITHUB_WEBHOOK_SECRET",
+    "SQLITE_DB_FILEPATH",
+  ].map((name) => [name, get(name)]));
+
 if (import.meta.main) {
-  const env = {
-    LOG_LEVEL: Deno.env.get("LOG_LEVEL"),
-    DEVIN_API_KEY: Deno.env.get("DEVIN_API_KEY"),
-    DEVIN_ORGANIZATION_ID: Deno.env.get("DEVIN_ORGANIZATION_ID"),
-    DEVIN_MAX_CONCURRENT_SESSIONS: Deno.env.get(
-      "DEVIN_MAX_CONCURRENT_SESSIONS",
-    ),
-    DEVIN_MAX_ATTEMPTS: Deno.env.get("DEVIN_MAX_ATTEMPTS"),
-    DEVIN_ORCHESTRATOR_INTERVAL_MS: Deno.env.get(
-      "DEVIN_ORCHESTRATOR_INTERVAL_MS",
-    ),
-    DEVIN_SUBMITTING_TIMEOUT_SECONDS: Deno.env.get(
-      "DEVIN_SUBMITTING_TIMEOUT_SECONDS",
-    ),
-    GITHUB_WEBHOOK_SECRET: Deno.env.get("GITHUB_WEBHOOK_SECRET"),
-    SQLITE_DB_FILEPATH: Deno.env.get("SQLITE_DB_FILEPATH"),
-  };
+  const env = applicationEnvironment((name) => Deno.env.get(name));
   const ConfigLive = ConfigProvider.layer(ConfigProvider.fromUnknown(env));
   DenoRuntime.runMain(
     runApplication().pipe(

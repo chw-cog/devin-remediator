@@ -1,4 +1,4 @@
-import { JsonSchema, Schema } from "effect";
+import { JsonSchema, Predicate, Schema } from "effect";
 
 export const RemediationOutcome = Schema.Literals([
   "fix_proposed",
@@ -51,6 +51,19 @@ export const RemediationOutput = Schema.Struct({
 });
 
 export type RemediationOutput = typeof RemediationOutput.Type;
+
+export const normalizedRemediationOutput = (output: RemediationOutput) =>
+  JSON.stringify(
+    output,
+    (_key, value: unknown) =>
+      Predicate.isObject(value) && !Array.isArray(value)
+        ? Object.fromEntries(
+          Object.entries(value).sort(([left], [right]) =>
+            left.localeCompare(right)
+          ),
+        )
+        : value,
+  );
 
 export const remediationOutputSchema = Schema.decodeUnknownSync(
   Schema.JsonObject,

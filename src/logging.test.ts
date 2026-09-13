@@ -212,7 +212,7 @@ Deno.test("JSON logs correlate concurrent requests through queue, processor, cli
       assert.ok(
         logs.some((log) =>
           log.annotations.component === "DevinSessionRepository" &&
-          log.annotations.operation === "markRunning" &&
+          log.annotations.operation === "markSubmitted" &&
           log.annotations.session_record_id ===
             submitted.annotations.session_record_id
         ),
@@ -221,10 +221,14 @@ Deno.test("JSON logs correlate concurrent requests through queue, processor, cli
       const created = findLog(logs, "Devin session created", "delivery-issues");
       assert.equal(created.annotations.devin_session_id, "remote-42");
       yield* orchestra.tick;
-      const finished = findLog(logs, "session.finished", "delivery-issues");
+      const finished = findLog(
+        logs,
+        "session.provider_transition",
+        "delivery-issues",
+      );
       assert.equal(finished.annotations.devin_session_id, "remote-42");
-      assert.equal(finished.annotations.status, "succeeded");
-      assert.equal(finished.annotations.pr_number, null);
+      assert.equal(finished.annotations.provider_lifecycle, "completed");
+      assert.equal(finished.annotations.provider_status_detail, "finished");
       assert.notEqual(
         finished.annotations.tick_id,
         created.annotations.tick_id,

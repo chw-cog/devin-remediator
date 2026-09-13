@@ -17,17 +17,27 @@ The official [List Sessions schema][list] defines:
 
 ## Application behavior
 
-Each orchestration tick reads running sessions from SQLite and queries Devin in
-batches of at most 200 session IDs. This ID batch size is an application limit,
-not a documented API filter limit. Each request sets `first=200` and leaves
-`is_archived` unset.
+Each orchestration tick claims due provider observations from SQLite in batches
+of at most 200 session IDs. This ID batch size is an application limit, not a
+provider filter limit. Each request sets `first=200` and `is_archived=false`.
+Missing IDs are then queried with `is_archived=true`. Each filter has
+independent pagination cursors; the complete lookup shares one 30-second
+timeout.
 
-The client follows every page, matches results by ID, and deduplicates returned
-sessions. A missing or repeated continuation cursor, invalid response, HTTP
-failure, or 30-second batch timeout fails the lookup without returning partial
-results. The orchestrator leaves that batch running and continues with
-subsequent batches. Sessions absent from a successful lookup also remain running
-for retry.
+The client follows every page, matches results by ID, and retains the newest
+provider timestamp among duplicate responses. A missing or repeated continuation
+cursor, invalid response, HTTP failure, or batch timeout fails the lookup
+without returning partial results. Unknown status details are retained as
+strings rather than rejecting a whole batch. A missing optional archive flag
+does not become a fabricated observation merely because the query used an
+archive filter.
+
+The orchestrator releases failed lookup leases without erasing observations,
+outputs, or remote identity and continues subsequent batches. Active and
+unobserved work remains due every tick. Waiting, paused, completed, and
+intervention states have a durable slower schedule. Archived sessions close
+normal tracking. See [passive session tracking](passive-devin-lifecycle.md) for
+capacity, result history, and observation fencing.
 
 Polling uses only `listSessions`; the client has no single-session getter.
 

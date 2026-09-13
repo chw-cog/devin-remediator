@@ -97,23 +97,7 @@ export const DevinSession = Schema.Struct({
     "suspended",
     "resuming",
   ]),
-  status_detail: Schema.optional(Schema.NullOr(Schema.Literals([
-    "working",
-    "waiting_for_user",
-    "waiting_for_approval",
-    "finished",
-    "inactivity",
-    "user_request",
-    "usage_limit_exceeded",
-    "out_of_credits",
-    "out_of_quota",
-    "no_quota_allocation",
-    "payment_declined",
-    "org_usage_limit_exceeded",
-    "user_usage_limit_exceeded",
-    "total_session_limit_exceeded",
-    "error",
-  ]))),
+  status_detail: Schema.optional(Schema.NullOr(Schema.String)),
   org_id: Schema.String,
   created_at: Schema.Int,
   updated_at: Schema.Int,
@@ -154,47 +138,91 @@ export const DevinSessionWithInsights = Schema.Struct({
 });
 export type DevinSessionWithInsights = typeof DevinSessionWithInsights.Type;
 
-export type SessionState =
-  & {
-    readonly pullRequestUrls: ReadonlyArray<string>;
-  }
-  & (
-    | { readonly status: "running"; readonly output: null }
-    | {
-      readonly status: "succeeded" | "failed";
-      readonly output: RemediationOutput;
-    }
-  );
+export type ProviderLifecycle =
+  | "active"
+  | "needs_input"
+  | "needs_approval"
+  | "paused"
+  | "needs_intervention"
+  | "completed"
+  | "closed";
+
+export type SessionState = {
+  readonly status: ProviderLifecycle;
+  readonly activeWork: boolean | null;
+  readonly output: RemediationOutput | null;
+  readonly pullRequestUrls: ReadonlyArray<string>;
+};
+
+const budgetReasons = new Set([
+  "usage_limit_exceeded",
+  "out_of_credits",
+  "out_of_quota",
+  "no_quota_allocation",
+  "payment_declined",
+  "org_usage_limit_exceeded",
+  "user_usage_limit_exceeded",
+  "total_session_limit_exceeded",
+]);
+
+export function continuationWindowElapsed(
+  createdAtSeconds: number | null,
+  nowMillis: number,
+): boolean | null {
+  return createdAtSeconds === null
+    ? null
+    : nowMillis >= (createdAtSeconds + 30 * 24 * 60 * 60) * 1000;
+}
 
 export function interpretSession(session: DevinSession): SessionState {
-  let status: SessionState["status"];
-  switch (session.status) {
-    case "error":
-    case "suspended":
-      status = "failed";
-      break;
-    case "exit":
-      status = session.status_detail === "finished" ? "succeeded" : "failed";
-      break;
-    case "running":
-      status = session.status_detail === "finished" ? "succeeded" : "running";
-      break;
-    case "new":
-    case "claimed":
-    case "resuming":
-      status = "running";
-      break;
+  let status: ProviderLifecycle = "needs_intervention";
+  let activeWork: boolean | null = null;
+  const detail = session.status_detail;
+  if (session.is_archived === true) {
+    status = "closed";
+    activeWork = false;
+  } else if (["new", "claimed", "resuming"].includes(session.status)) {
+    status = "active";
+    activeWork = true;
+  } else if (session.status === "running") {
+    switch (detail) {
+      case "waiting_for_user":
+        status = "needs_input";
+        activeWork = false;
+        break;
+      case "waiting_for_approval":
+        status = "needs_approval";
+        activeWork = false;
+        break;
+      case "finished":
+        status = "completed";
+        activeWork = false;
+        break;
+      case "working":
+      case null:
+      case undefined:
+        status = "active";
+        activeWork = true;
+        break;
+    }
+  } else if (session.status === "exit" && detail === "finished") {
+    status = "completed";
+    activeWork = false;
+  } else if (session.status === "suspended") {
+    if (detail === "inactivity" || detail === "user_request") {
+      status = "paused";
+      activeWork = false;
+    } else if (detail != null && budgetReasons.has(detail)) {
+      activeWork = false;
+    }
   }
-  const pullRequestUrls = session.pull_requests.map((pr) => pr.pr_url);
-  if (status === "running") return { status, output: null, pullRequestUrls };
   const decoded = decodeRemediationOutput(session.structured_output);
-  const output: RemediationOutput = Option.isSome(decoded) ? decoded.value : {
-    outcome: status === "succeeded" ? "needs_human" : "failed",
-    summary: status === "succeeded"
-      ? "Session completed without a valid structured remediation result."
-      : "Session failed without a valid structured remediation result.",
+  return {
+    status,
+    activeWork,
+    output: Option.isSome(decoded) ? decoded.value : null,
+    pullRequestUrls: session.pull_requests.map((pr) => pr.pr_url),
   };
-  return { status, output, pullRequestUrls };
 }
 
 const PullRequestUrl = Schema.String.check(
@@ -436,34 +464,44 @@ export class DevinClient extends Context.Service<DevinClient, {
         function* (session_ids: ReadonlyArray<string>) {
           const ids = yield* decodeSessionIds(session_ids);
           if (ids.length === 0) return [];
-          const requested = new Set(ids);
           const sessions = new Map<string, DevinSession>();
-          let after: string | undefined;
-          const cursors = new Set<string>();
-          do {
-            const page = yield* client.get("/sessions", {
-              urlParams: {
-                session_ids: ids,
-                first: sessionBatchSize,
-                ...(after === undefined ? {} : { after }),
-              },
-            }).pipe(
-              Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionPage)),
-            );
-            for (const session of page.items) {
-              if (requested.has(session.session_id)) {
-                sessions.set(session.session_id, session);
+          for (const is_archived of [false, true]) {
+            const remaining = ids.filter((id) => !sessions.has(id));
+            if (remaining.length === 0) break;
+            const requestedPage = new Set(remaining);
+            let after: string | undefined;
+            const cursors = new Set<string>();
+            do {
+              const page = yield* client.get("/sessions", {
+                urlParams: {
+                  session_ids: remaining,
+                  is_archived,
+                  first: sessionBatchSize,
+                  ...(after === undefined ? {} : { after }),
+                },
+              }).pipe(
+                Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionPage)),
+              );
+              for (const session of page.items) {
+                if (
+                  requestedPage.has(session.session_id) &&
+                  session.updated_at >=
+                    (sessions.get(session.session_id)?.updated_at ?? -Infinity)
+                ) {
+                  sessions.set(session.session_id, session);
+                }
               }
-            }
-            if (!page.has_next_page) break;
-            if (page.end_cursor == null || cursors.has(page.end_cursor)) {
-              return yield* new DevinLookupError({
-                cause: "Incomplete session lookup: missing or repeated cursor",
-              });
-            }
-            after = page.end_cursor;
-            cursors.add(after);
-          } while (true);
+              if (!page.has_next_page) break;
+              if (page.end_cursor == null || cursors.has(page.end_cursor)) {
+                return yield* new DevinLookupError({
+                  cause:
+                    "Incomplete session lookup: missing or repeated cursor",
+                });
+              }
+              after = page.end_cursor;
+              cursors.add(after);
+            } while (true);
+          }
           return [...sessions.values()];
         },
         Effect.timeout("30 seconds"),

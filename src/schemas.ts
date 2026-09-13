@@ -8,7 +8,7 @@ import {
   text,
 } from "drizzle-orm/sqlite-core";
 import type { RemediationOutput } from "./remediation-output.ts";
-import type { SessionAnalysis } from "./devin.ts";
+import type { ProviderLifecycle, SessionAnalysis } from "./devin.ts";
 
 export const githubWebhookDeliveries = sqliteTable(
   "github_webhook_deliveries",
@@ -33,13 +33,27 @@ export const devinSessions = sqliteTable("devin_sessions", {
     enum: [
       "pending",
       "submitting",
-      "running",
-      "succeeded",
+      "submitted",
       "failed",
       "skipped",
     ],
   }).notNull(),
-  output: text("output", { mode: "json" }).$type<RemediationOutput>(),
+  providerStatus: text("provider_status"),
+  providerStatusDetail: text("provider_status_detail"),
+  providerLifecycle: text("provider_lifecycle").$type<ProviderLifecycle>(),
+  activeWork: integer("active_work", { mode: "boolean" }),
+  isArchived: integer("is_archived", { mode: "boolean" }),
+  providerCreatedAt: integer("provider_created_at"),
+  providerUpdatedAt: integer("provider_updated_at"),
+  sessionUrl: text("session_url"),
+  lastObservedAt: text("last_observed_at"),
+  nextObservationAt: text("next_observation_at").notNull()
+    .default("1970-01-01T00:00:00.000Z"),
+  observationVersion: integer("observation_version").notNull().default(0),
+  observationLeaseUntil: text("observation_lease_until"),
+  completionObservedAt: text("completion_observed_at"),
+  outputs: text("outputs", { mode: "json" })
+    .$type<ReadonlyArray<RemediationOutput>>().notNull().default([]),
   analysis: text("analysis", { mode: "json" }).$type<SessionAnalysis>(),
   analysisStatus: text("analysis_status", {
     enum: ["pending", "collected", "unavailable"],
@@ -61,7 +75,15 @@ export const devinSessions = sqliteTable("devin_sessions", {
   primaryKey({ columns: [table.id] }),
   check(
     "devin_sessions_status_check",
-    sql`${table.status} IN ('pending', 'submitting', 'running', 'succeeded', 'failed', 'skipped')`,
+    sql`${table.status} IN ('pending', 'submitting', 'submitted', 'failed', 'skipped')`,
+  ),
+  check(
+    "devin_sessions_provider_lifecycle_check",
+    sql`${table.providerLifecycle} IS NULL OR ${table.providerLifecycle} IN ('active', 'needs_input', 'needs_approval', 'paused', 'needs_intervention', 'completed', 'closed')`,
+  ),
+  index("devin_sessions_observation_due_idx").on(
+    table.status,
+    table.nextObservationAt,
   ),
   check("devin_sessions_attempts_check", sql`${table.attempts} >= 0`),
   index("devin_sessions_analysis_due_idx").on(
@@ -77,7 +99,7 @@ export const devinSessions = sqliteTable("devin_sessions", {
     sql`(${table.analysisStatus} = 'collected' AND ${table.analysis} IS NOT NULL AND CASE WHEN json_valid(${table.analysis}) THEN json_type(${table.analysis}) = 'object' ELSE 0 END) OR (${table.analysisStatus} IN ('pending', 'unavailable') AND ${table.analysis} IS NULL)`,
   ),
   check(
-    "devin_sessions_output_check",
-    sql`(${table.status} IN ('succeeded', 'failed') AND ${table.output} IS NOT NULL AND CASE WHEN json_valid(${table.output}) THEN json_type(${table.output}) = 'object' AND json_type(${table.output}, '$.outcome') IS 'text' AND json_extract(${table.output}, '$.outcome') IN ('fix_proposed', 'needs_human', 'not_reproducible', 'failed', 'already_resolved') AND json_type(${table.output}, '$.summary') IS 'text' AND length(trim(json_extract(${table.output}, '$.summary'))) > 0 ELSE 0 END) OR (${table.status} NOT IN ('succeeded', 'failed') AND ${table.output} IS NULL)`,
+    "devin_sessions_outputs_check",
+    sql`CASE WHEN json_valid(${table.outputs}) THEN json_type(${table.outputs}) = 'array' ELSE 0 END`,
   ),
 ]);

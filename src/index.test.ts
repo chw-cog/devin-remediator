@@ -8,7 +8,8 @@ import { playbook } from "../test/fixtures/playbook.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
 import { DevinSessionRepository } from "./devin-session-repository.ts";
 import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
-import { runApplication } from "./index.ts";
+import { AppConfig } from "./config.ts";
+import { applicationEnvironment, runApplication } from "./index.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 import {
   type WebhookEventOutcome,
@@ -209,7 +210,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
     issue: { number: 42, labels: [{ name: "devin" }] },
   };
   const cases = [
-    { id: "matching", event: "issues", payload: matching, status: "running" },
+    { id: "matching", event: "issues", payload: matching, status: "submitted" },
     {
       id: "different-case",
       event: "issues",
@@ -326,7 +327,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
       assert.equal(creates.length, 2);
       assert.equal(
         new Set(
-          sessions.filter((session) => session.status === "running")
+          sessions.filter((session) => session.status === "submitted")
             .map((session) => session.devinSessionId),
         ).size,
         2,
@@ -367,7 +368,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
       });
       const customSession = (yield* db.select().from(devinSessions))
         .find((session) => session.githubDeliveryId === "custom");
-      assert.equal(customSession?.status, "running");
+      assert.equal(customSession?.status, "submitted");
       assert.equal(customSession?.devinSessionId, "http-remote-3");
       const customDelivery = (yield* db.select().from(githubWebhookDeliveries))
         .find((delivery) => delivery.deliveryId === "custom");
@@ -375,4 +376,30 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
       assert.equal(customDelivery?.payload, customPayload);
     }).pipe(Effect.scoped, Effect.provide(TestLive)),
   );
+});
+
+Deno.test("production environment forwarding honors retained polling and analysis bounds", async () => {
+  const env = applicationEnvironment((name) =>
+    ({
+      DEVIN_API_KEY: "test",
+      DEVIN_ORGANIZATION_ID: "org",
+      GITHUB_WEBHOOK_SECRET: "test",
+      DEVIN_RETAINED_POLL_INTERVAL_MS: "12345",
+      DEVIN_ANALYSIS_MAX_ATTEMPTS: "7",
+    } as Record<string, string>)[name]
+  );
+  const config = await Effect.runPromise(
+    AppConfig.pipe(
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
+    ),
+  );
+  assert.equal(config.devinRetainedPollIntervalMs, 12345);
+  assert.equal(config.devinAnalysisMaxAttempts, 7);
+  for (const entry of ["start", "dev"]) {
+    const tasks = JSON.parse(
+      await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
+    ).tasks;
+    assert.ok(tasks[entry].includes("DEVIN_RETAINED_POLL_INTERVAL_MS"));
+    assert.ok(tasks[entry].includes("DEVIN_ANALYSIS_MAX_ATTEMPTS"));
+  }
 });

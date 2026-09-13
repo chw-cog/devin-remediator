@@ -24,6 +24,7 @@ Deno.test("AppConfig loads settings from the supplied config layer", async () =>
       devinMaxConcurrentSessions: 3,
       devinMaxAttempts: 3,
       devinAnalysisMaxAttempts: 12,
+      devinRetainedPollIntervalMs: 60000,
       devinOrchestratorIntervalMs: 3000,
       devinSubmittingTimeoutSeconds: 60,
       githubWebhookSecret: `${key}-webhook-secret`,

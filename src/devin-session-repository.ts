@@ -3,19 +3,33 @@ import {
   asc,
   count,
   eq,
+  gt,
   gte,
   inArray,
   isNotNull,
   isNull,
   lt,
   lte,
+  or,
   sql,
 } from "drizzle-orm";
 import { Context, DateTime, Effect, Layer } from "effect";
 import { AppConfig } from "./config.ts";
 import { DatabaseClient, DatabaseError } from "./database.ts";
 import { observe } from "./logging.ts";
-import type { SessionAnalysis, SessionState } from "./devin.ts";
+import {
+  continuationWindowElapsed,
+  type DevinSession,
+  findPullRequestNumber,
+  interpretSession,
+  type ProviderLifecycle,
+  type SessionAnalysis,
+  sessionBatchSize,
+} from "./devin.ts";
+import {
+  normalizedRemediationOutput,
+  type RemediationOutput,
+} from "./remediation-output.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
 export type SessionRecord = typeof devinSessions.$inferSelect;
@@ -24,7 +38,7 @@ export type SessionWork = {
   readonly session: SessionRecord;
   readonly delivery: DeliveryRecord;
 };
-export type RunningSession = SessionWork & {
+export type ObservationClaim = SessionWork & {
   readonly session: SessionRecord & { readonly devinSessionId: string };
 };
 export type AnalysisClaim = SessionRecord & { readonly devinSessionId: string };
@@ -38,6 +52,10 @@ export type AnalysisResult =
   };
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+const appendOutput = (output: RemediationOutput) =>
+  sql`json_insert(${devinSessions.outputs}, '$[#]', json(${
+    JSON.stringify(output)
+  }))`;
 const databaseError = (cause: unknown) => new DatabaseError({ cause });
 const observeClaim =
   (operation: string) =>
@@ -76,13 +94,16 @@ export class DevinSessionRepository extends Context.Service<
       claim: SessionRecord,
       outcome: "empty" | "unavailable" | "duplicates",
     ) => Effect.Effect<ReadonlyArray<SessionRecord>, DatabaseError>;
-    readonly findRunning: Effect.Effect<
-      ReadonlyArray<RunningSession>,
+    readonly claimDueObservations: (
+      after?: Pick<SessionRecord, "insertedAt" | "id">,
+    ) => Effect.Effect<
+      ReadonlyArray<ObservationClaim>,
       DatabaseError
     >;
-    readonly markRunning: (
+    readonly markSubmitted: (
       claim: SessionRecord,
       devinSessionId: string,
+      observation?: DevinSession,
     ) => Effect.Effect<boolean, DatabaseError>;
     readonly markSkipped: (
       claim: SessionRecord,
@@ -91,11 +112,13 @@ export class DevinSessionRepository extends Context.Service<
       claim: SessionRecord,
       retryable: boolean,
     ) => Effect.Effect<ReadonlyArray<SessionRecord>, DatabaseError>;
-    readonly finish: (
-      work: RunningSession,
-      state: Extract<SessionState, { status: "succeeded" | "failed" }>,
-      prNumber: number | null,
+    readonly recordObservation: (
+      claim: ObservationClaim,
+      observation: DevinSession,
     ) => Effect.Effect<boolean, DatabaseError>;
+    readonly releaseObservation: (
+      claim: ObservationClaim,
+    ) => Effect.Effect<void, DatabaseError>;
     readonly claimDueAnalyses: Effect.Effect<
       ReadonlyArray<AnalysisClaim>,
       DatabaseError
@@ -117,10 +140,10 @@ export class DevinSessionRepository extends Context.Service<
           const updatedAt = yield* nowIso;
           yield* tx.update(devinSessions).set({
             status: "failed",
-            output: {
+            outputs: appendOutput({
               outcome: "failed",
               summary: "Submission attempts exhausted before session creation.",
-            },
+            }),
             updatedAt,
           })
             .where(and(
@@ -129,7 +152,17 @@ export class DevinSessionRepository extends Context.Service<
             ));
           const [active] = yield* tx.select({ count: count() })
             .from(devinSessions).where(
-              inArray(devinSessions.status, ["submitting", "running"]),
+              or(
+                eq(devinSessions.status, "submitting"),
+                and(
+                  eq(devinSessions.status, "submitted"),
+                  or(
+                    isNull(devinSessions.activeWork),
+                    eq(devinSessions.activeWork, true),
+                    gt(devinSessions.observationLeaseUntil, updatedAt),
+                  ),
+                ),
+              ),
             );
           const capacity = Math.max(
             0,
@@ -238,13 +271,13 @@ export class DevinSessionRepository extends Context.Service<
           return yield* db.update(devinSessions).set({
             claimVersion: sql`${devinSessions.claimVersion} + 1`,
             status,
-            output: status === "failed"
-              ? {
+            outputs: status === "failed"
+              ? appendOutput({
                 outcome: "failed",
                 summary:
                   "Submission attempts exhausted after repeated empty recovery lookups.",
-              }
-              : null,
+              })
+              : devinSessions.outputs,
             recoveryEmptyChecks: outcome === "empty"
               ? claim.recoveryEmptyChecks + 1
               : 0,
@@ -256,44 +289,205 @@ export class DevinSessionRepository extends Context.Service<
         observeClaim("recordRecoveryMiss"),
       );
 
-      const findRunning = db.select({
-        session: devinSessions,
-        delivery: githubWebhookDeliveries,
-      }).from(devinSessions).innerJoin(
-        githubWebhookDeliveries,
-        eq(devinSessions.githubDeliveryId, githubWebhookDeliveries.deliveryId),
-      ).where(eq(devinSessions.status, "running"))
-        .orderBy(asc(devinSessions.insertedAt), asc(devinSessions.id)).pipe(
-          Effect.map((rows) =>
-            rows.flatMap(({ session, delivery }) =>
-              session.devinSessionId === null ? [] : [{
-                session: { ...session, devinSessionId: session.devinSessionId },
-                delivery,
-              }]
-            )
-          ),
-          Effect.mapError(databaseError),
-          observe("DevinSessionRepository", "findRunning"),
-        );
+      const nextObservationAt = (
+        lifecycle: ProviderLifecycle | null,
+        now: DateTime.Utc,
+      ) =>
+        lifecycle !== null && lifecycle !== "active"
+          ? DateTime.formatIso(DateTime.add(now, {
+            milliseconds: Math.max(
+              config.devinRetainedPollIntervalMs,
+              config.devinOrchestratorIntervalMs,
+            ),
+          }))
+          : "1970-01-01T00:00:00.000Z";
 
-      const markRunning = Effect.fn("DevinSessionRepository.markRunning")(
-        function* (claim: SessionRecord, devinSessionId: string) {
-          const rows = yield* db.update(devinSessions).set({
-            status: "running",
-            devinSessionId,
-            updatedAt: yield* nowIso,
-          }).where(ownsClaim(claim)).returning({ id: devinSessions.id });
-          yield* Effect.logDebug("session.transition").pipe(
+      const observationUpdate = (
+        current: SessionRecord,
+        remote: DevinSession,
+        repo: string,
+        now: DateTime.Utc,
+      ) => {
+        const isArchived = remote.is_archived ?? current.isArchived;
+        const state = interpretSession({
+          ...remote,
+          ...(isArchived === null ? {} : { is_archived: isArchived }),
+        });
+        const latest = current.outputs.at(-1);
+        const append = state.output !== null && (latest === undefined ||
+          normalizedRemediationOutput(latest) !==
+            normalizedRemediationOutput(state.output));
+        return {
+          providerStatus: remote.status,
+          providerStatusDetail: remote.status_detail ?? null,
+          providerLifecycle: state.status,
+          activeWork: state.activeWork,
+          isArchived,
+          providerCreatedAt: remote.created_at,
+          providerUpdatedAt: remote.updated_at,
+          sessionUrl: remote.url,
+          lastObservedAt: DateTime.formatIso(now),
+          nextObservationAt: nextObservationAt(state.status, now),
+          observationLeaseUntil: null,
+          completionObservedAt: current.completionObservedAt ??
+            (interpretSession({ ...remote, is_archived: false }).status ===
+                "completed"
+              ? DateTime.formatIso(now)
+              : null),
+          outputs: append && state.output !== null
+            ? appendOutput(state.output)
+            : devinSessions.outputs,
+          prNumber: findPullRequestNumber(state.pullRequestUrls, repo) ??
+            current.prNumber,
+          updatedAt: DateTime.formatIso(now),
+        };
+      };
+
+      const logObservation = (
+        before: SessionRecord,
+        after: SessionRecord,
+        now: DateTime.Utc,
+      ) =>
+        before.providerLifecycle === after.providerLifecycle &&
+          before.providerStatus === after.providerStatus &&
+          before.providerStatusDetail === after.providerStatusDetail &&
+          before.isArchived === after.isArchived
+          ? Effect.void
+          : Effect.logInfo("session.provider_transition").pipe(
             Effect.annotateLogs({
-              status: "running",
-              changed: rows.length === 1,
-              devin_session_id: devinSessionId,
+              previous_lifecycle: before.providerLifecycle,
+              provider_lifecycle: after.providerLifecycle,
+              provider_status: after.providerStatus,
+              provider_status_detail: after.providerStatusDetail,
+              is_archived: after.isArchived,
+              session_url: after.sessionUrl,
+              continuation_window_elapsed: continuationWindowElapsed(
+                after.providerCreatedAt,
+                DateTime.toEpochMillis(now),
+              ),
             }),
           );
-          return rows.length === 1;
+
+      const claimDueObservations = Effect.fn(
+        "DevinSessionRepository.claimDueObservations",
+      )(
+        (after?: Pick<SessionRecord, "insertedAt" | "id">) =>
+          db.transaction((tx) =>
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              const due = and(
+                eq(devinSessions.status, "submitted"),
+                isNotNull(devinSessions.devinSessionId),
+                or(
+                  isNull(devinSessions.providerLifecycle),
+                  sql`${devinSessions.providerLifecycle} != 'closed'`,
+                ),
+                lte(devinSessions.nextObservationAt, DateTime.formatIso(now)),
+                or(
+                  isNull(devinSessions.observationLeaseUntil),
+                  lte(
+                    devinSessions.observationLeaseUntil,
+                    DateTime.formatIso(now),
+                  ),
+                ),
+                after === undefined ? undefined : or(
+                  gt(devinSessions.insertedAt, after.insertedAt),
+                  and(
+                    eq(devinSessions.insertedAt, after.insertedAt),
+                    gt(devinSessions.id, after.id),
+                  ),
+                ),
+              );
+              const selected = yield* tx.select({ id: devinSessions.id }).from(
+                devinSessions,
+              )
+                .where(due).orderBy(
+                  asc(devinSessions.insertedAt),
+                  asc(devinSessions.id),
+                ).limit(sessionBatchSize);
+              if (selected.length === 0) return [];
+              const claims = yield* tx.update(devinSessions).set({
+                observationVersion:
+                  sql`${devinSessions.observationVersion} + 1`,
+                observationLeaseUntil: DateTime.formatIso(
+                  DateTime.add(now, { seconds: 60 }),
+                ),
+              }).where(and(
+                due,
+                inArray(devinSessions.id, selected.map((row) => row.id)),
+              )).returning({ id: devinSessions.id });
+              if (claims.length === 0) return [];
+              const rows = yield* tx.select({
+                session: devinSessions,
+                delivery: githubWebhookDeliveries,
+              })
+                .from(devinSessions).innerJoin(
+                  githubWebhookDeliveries,
+                  eq(
+                    devinSessions.githubDeliveryId,
+                    githubWebhookDeliveries.deliveryId,
+                  ),
+                )
+                .where(
+                  inArray(devinSessions.id, claims.map((claim) => claim.id)),
+                )
+                .orderBy(asc(devinSessions.insertedAt), asc(devinSessions.id));
+              return rows.flatMap(({ session, delivery }) =>
+                session.devinSessionId === null ? [] : [{
+                  session: {
+                    ...session,
+                    devinSessionId: session.devinSessionId,
+                  },
+                  delivery,
+                }]
+              );
+            })
+          ),
+        Effect.mapError(databaseError),
+        observe("DevinSessionRepository", "claimDueObservations"),
+      );
+
+      const markSubmitted = Effect.fn("DevinSessionRepository.markSubmitted")(
+        function* (
+          claim: SessionRecord,
+          devinSessionId: string,
+          observation?: DevinSession,
+        ) {
+          const now = yield* DateTime.now;
+          return yield* db.transaction((tx) =>
+            Effect.gen(function* () {
+              const [saved] = yield* tx.update(devinSessions).set({
+                status: "submitted",
+                devinSessionId,
+                updatedAt: DateTime.formatIso(now),
+              }).where(ownsClaim(claim)).returning();
+              if (!saved) return false;
+              if (
+                observation !== undefined &&
+                observation.session_id === devinSessionId
+              ) {
+                const [delivery] = yield* tx.select().from(
+                  githubWebhookDeliveries,
+                )
+                  .where(
+                    eq(
+                      githubWebhookDeliveries.deliveryId,
+                      saved.githubDeliveryId,
+                    ),
+                  );
+                const [observed] = yield* tx.update(devinSessions)
+                  .set(
+                    observationUpdate(saved, observation, delivery.repo, now),
+                  )
+                  .where(eq(devinSessions.id, saved.id)).returning();
+                yield* logObservation(saved, observed, now);
+              }
+              return true;
+            })
+          );
         },
         Effect.mapError(databaseError),
-        observeClaim("markRunning"),
+        observeClaim("markSubmitted"),
       );
 
       const markSkipped = Effect.fn("DevinSessionRepository.markSkipped")(
@@ -323,14 +517,14 @@ export class DevinSessionRepository extends Context.Service<
             : "failed";
           return yield* db.update(devinSessions).set({
             status,
-            output: status === "failed"
-              ? {
+            outputs: status === "failed"
+              ? appendOutput({
                 outcome: "failed",
                 summary: retryable
                   ? "Submission rejected; retry attempts exhausted."
                   : "Submission permanently rejected before session creation.",
-              }
-              : null,
+              })
+              : devinSessions.outputs,
             updatedAt: yield* nowIso,
           }).where(ownsClaim(claim)).returning();
         },
@@ -338,41 +532,85 @@ export class DevinSessionRepository extends Context.Service<
         observeClaim("rejectSubmission"),
       );
 
-      const finish = Effect.fn("DevinSessionRepository.finish")(
-        function* (
-          work: RunningSession,
-          state: Extract<SessionState, { status: "succeeded" | "failed" }>,
-          prNumber: number | null,
-        ) {
-          const rows = yield* db.update(devinSessions).set({
-            status: state.status,
-            output: state.output,
-            prNumber,
-            updatedAt: yield* nowIso,
-          }).where(and(
-            eq(devinSessions.id, work.session.id),
-            eq(devinSessions.status, "running"),
-            eq(devinSessions.devinSessionId, work.session.devinSessionId),
-          )).returning({ id: devinSessions.id });
-          yield* Effect.logDebug("session.transition").pipe(
-            Effect.annotateLogs({
-              status: state.status,
-              outcome: state.output.outcome,
-              pr_number: prNumber,
-              changed: rows.length === 1,
-            }),
+      const ownsObservation = (claim: ObservationClaim, now: DateTime.Utc) =>
+        and(
+          eq(devinSessions.id, claim.session.id),
+          eq(devinSessions.status, "submitted"),
+          eq(devinSessions.devinSessionId, claim.session.devinSessionId),
+          eq(
+            devinSessions.observationVersion,
+            claim.session.observationVersion,
+          ),
+          gt(devinSessions.observationLeaseUntil, DateTime.formatIso(now)),
+        );
+
+      const releaseObservation = Effect.fn(
+        "DevinSessionRepository.releaseObservation",
+      )(
+        function* (claim: ObservationClaim) {
+          yield* db.transaction((tx) =>
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              yield* tx.update(devinSessions).set({
+                observationLeaseUntil: null,
+                nextObservationAt: nextObservationAt(
+                  claim.session.providerLifecycle,
+                  now,
+                ),
+              }).where(ownsObservation(claim, now));
+            })
           );
-          return rows.length === 1;
         },
         Effect.mapError(databaseError),
-        (effect, work) => observeClaim("finish")(effect, work.session),
+        (effect, claim) =>
+          observeClaim("releaseObservation")(effect, claim.session),
+      );
+
+      const recordObservation = Effect.fn(
+        "DevinSessionRepository.recordObservation",
+      )(
+        function* (claim: ObservationClaim, remote: DevinSession) {
+          if (remote.session_id !== claim.session.devinSessionId) return false;
+          return yield* db.transaction((tx) =>
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              const [current] = yield* tx.select().from(devinSessions)
+                .where(ownsObservation(claim, now));
+              if (!current) return false;
+              if (
+                current.providerUpdatedAt !== null &&
+                remote.updated_at < current.providerUpdatedAt
+              ) {
+                yield* tx.update(devinSessions).set({
+                  observationLeaseUntil: null,
+                  nextObservationAt: nextObservationAt(
+                    current.providerLifecycle,
+                    now,
+                  ),
+                }).where(ownsObservation(claim, now));
+                return false;
+              }
+              const [saved] = yield* tx.update(devinSessions)
+                .set(
+                  observationUpdate(current, remote, claim.delivery.repo, now),
+                )
+                .where(ownsObservation(claim, now)).returning();
+              if (!saved) return false;
+              yield* logObservation(current, saved, now);
+              return true;
+            })
+          );
+        },
+        Effect.mapError(databaseError),
+        (effect, claim) =>
+          observeClaim("recordObservation")(effect, claim.session),
       );
 
       const claimDueAnalyses = db.transaction((tx) =>
         Effect.gen(function* () {
           const now = yield* DateTime.now;
           const due = and(
-            inArray(devinSessions.status, ["succeeded", "failed"]),
+            isNotNull(devinSessions.completionObservedAt),
             isNotNull(devinSessions.devinSessionId),
             eq(devinSessions.analysisStatus, "pending"),
             lte(devinSessions.analysisNextAttemptAt, DateTime.formatIso(now)),
@@ -450,11 +688,12 @@ export class DevinSessionRepository extends Context.Service<
         claimPending,
         claimStale,
         recordRecoveryMiss,
-        findRunning,
-        markRunning,
+        claimDueObservations,
+        markSubmitted,
         markSkipped,
         rejectSubmission,
-        finish,
+        recordObservation,
+        releaseObservation,
         claimDueAnalyses,
         recordAnalysis,
       });

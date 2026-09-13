@@ -4,6 +4,7 @@ import { TestClock } from "effect/testing";
 import { FetchHttpClient } from "effect/unstable/http";
 import type { Env } from "./config.ts";
 import {
+  continuationWindowElapsed,
   DevinClient,
   type DevinLookupError,
   type DevinSubmissionError,
@@ -517,7 +518,7 @@ Deno.test("listSessions follows every cursor with the same filter and deduplicat
       const url = new URL(String(input));
       assert.deepEqual(url.searchParams.getAll("session_ids"), ids);
       assert.equal(url.searchParams.get("first"), "200");
-      assert.equal(url.searchParams.has("is_archived"), false);
+      assert.equal(url.searchParams.get("is_archived"), "false");
       const after = url.searchParams.get("after");
       cursors.push(after);
       return Promise.resolve(Response.json(
@@ -947,18 +948,18 @@ Deno.test("invalid JSON, invalid session data, and network errors fail", async (
 
 Deno.test("listSessions encodes IDs, authenticates, and supplies interpretable provider states", async () => {
   for (
-    const [status, detail, expected] of [
-      ["new", null, "running"],
-      ["claimed", null, "running"],
-      ["resuming", null, "running"],
-      ["running", "working", "running"],
-      ["running", "waiting_for_user", "running"],
-      ["running", "waiting_for_approval", "running"],
-      ["running", "finished", "succeeded"],
-      ["exit", "finished", "succeeded"],
-      ["exit", null, "failed"],
-      ["suspended", "out_of_credits", "failed"],
-      ["error", "finished", "failed"],
+    const [status, detail, expected, activeWork] of [
+      ["new", null, "active", true],
+      ["claimed", null, "active", true],
+      ["resuming", null, "active", true],
+      ["running", "working", "active", true],
+      ["running", "waiting_for_user", "needs_input", false],
+      ["running", "waiting_for_approval", "needs_approval", false],
+      ["running", "finished", "completed", false],
+      ["exit", "finished", "completed", false],
+      ["exit", null, "needs_intervention", null],
+      ["suspended", "out_of_credits", "needs_intervention", false],
+      ["error", "finished", "needs_intervention", null],
     ]
   ) {
     const result = await runWithFetch(
@@ -995,25 +996,21 @@ Deno.test("listSessions encodes IDs, authenticates, and supplies interpretable p
     );
     assert.deepEqual(result, {
       status: expected,
-      output: expected === "running" ? null : {
-        outcome: expected === "succeeded" ? "needs_human" : "failed",
-        summary: expected === "succeeded"
-          ? "Session completed without a valid structured remediation result."
-          : "Session failed without a valid structured remediation result.",
-      },
+      activeWork,
+      output: null,
       pullRequestUrls: ["https://github.com/owner/repo/pull/42"],
     });
   }
 });
 
-Deno.test("listed sessions validate terminal outcomes and ignore intermediate output", async () => {
+Deno.test("listed sessions decode valid results independently of lifecycle without invented fallbacks", async () => {
   for (
-    const [status, status_detail, fallback] of [
-      ["running", "working", null],
-      ["running", "finished", "needs_human"],
-      ["exit", "finished", "needs_human"],
-      ["error", "error", "failed"],
-      ["suspended", "out_of_credits", "failed"],
+    const [status, status_detail] of [
+      ["running", "working"],
+      ["running", "finished"],
+      ["exit", "finished"],
+      ["error", "error"],
+      ["suspended", "out_of_credits"],
     ] as const
   ) {
     for (
@@ -1045,7 +1042,7 @@ Deno.test("listed sessions validate terminal outcomes and ignore intermediate ou
               }],
             })),
         );
-        assert.deepEqual(result.output, fallback === null ? null : output);
+        assert.deepEqual(result.output, output);
       }
     }
     for (
@@ -1084,12 +1081,7 @@ Deno.test("listed sessions validate terminal outcomes and ignore intermediate ou
       );
       assert.deepEqual(
         result.output,
-        fallback === null ? null : {
-          outcome: fallback,
-          summary: fallback === "needs_human"
-            ? "Session completed without a valid structured remediation result."
-            : "Session failed without a valid structured remediation result.",
-        },
+        null,
         JSON.stringify(structured_output),
       );
     }
@@ -1161,11 +1153,7 @@ Deno.test("listed sessions preserve full evidence and reject malformed evidence 
           }],
         })),
     );
-    assert.deepEqual(result.output, {
-      outcome: "needs_human",
-      summary:
-        "Session completed without a valid structured remediation result.",
-    });
+    assert.equal(result.output, null);
   }
 });
 
@@ -1279,4 +1267,153 @@ Deno.test("DevinClient.layer rejects missing config before running the consumer"
     assert.equal(result.failure._tag, "ConfigError");
     assert.equal(ran, false);
   }
+});
+
+Deno.test("pure lifecycle policies preserve every suspension reason and archived precedence", () => {
+  for (const reason of ["inactivity", "user_request"]) {
+    const state = interpretSession({
+      ...session,
+      status: "suspended",
+      status_detail: reason,
+    });
+    assert.equal(state.status, "paused");
+    assert.equal(state.activeWork, false);
+    assert.equal(state.output, null);
+  }
+  for (
+    const reason of [
+      "usage_limit_exceeded",
+      "out_of_credits",
+      "out_of_quota",
+      "no_quota_allocation",
+      "payment_declined",
+      "org_usage_limit_exceeded",
+      "user_usage_limit_exceeded",
+      "total_session_limit_exceeded",
+    ]
+  ) {
+    const state = interpretSession({
+      ...session,
+      status: "suspended",
+      status_detail: reason,
+    });
+    assert.equal(state.status, "needs_intervention", reason);
+    assert.equal(state.activeWork, false, reason);
+    assert.equal(state.output, null);
+  }
+  for (const reason of ["error", "future_reason", null, undefined]) {
+    const state = interpretSession({
+      ...session,
+      status: "suspended",
+      status_detail: reason,
+    });
+    assert.equal(state.status, "needs_intervention");
+    assert.equal(state.activeWork, null);
+  }
+  for (
+    const status of [
+      "new",
+      "claimed",
+      "resuming",
+      "running",
+      "suspended",
+      "exit",
+      "error",
+    ] as const
+  ) {
+    const state = interpretSession({
+      ...session,
+      status,
+      status_detail: "working",
+      is_archived: true,
+    });
+    assert.equal(state.status, "closed", status);
+    assert.equal(state.activeWork, false, status);
+  }
+  assert.equal(
+    interpretSession({ ...session, status: "exit", status_detail: null })
+      .status,
+    "needs_intervention",
+  );
+  assert.equal(
+    interpretSession({ ...session, status: "exit", status_detail: "finished" })
+      .status,
+    "completed",
+  );
+});
+
+Deno.test("the local 30-day advisory uses remote Unix seconds and never closes active work", () => {
+  const created = 1700000000;
+  const boundary = (created + 30 * 86400) * 1000;
+  assert.equal(continuationWindowElapsed(null, boundary), null);
+  assert.equal(continuationWindowElapsed(created, boundary - 1), false);
+  assert.equal(continuationWindowElapsed(created, boundary), true);
+  assert.equal(continuationWindowElapsed(created, boundary + 86400000), true);
+  assert.equal(
+    interpretSession({
+      ...session,
+      created_at: created,
+      status: "running",
+      status_detail: "working",
+    }).status,
+    "active",
+  );
+});
+
+Deno.test("missing IDs are searched explicitly in archives and unknown details do not poison a batch", async () => {
+  const calls: string[] = [];
+  const results = await runWithFetch(
+    DevinClient.use((client) =>
+      client.listSessions(["active", "archived", "missing"])
+    ),
+    (input) => {
+      const url = new URL(String(input));
+      const archived = url.searchParams.get("is_archived");
+      calls.push(archived!);
+      assert.deepEqual(
+        url.searchParams.getAll("session_ids"),
+        archived === "false"
+          ? ["active", "archived", "missing"]
+          : ["archived", "missing"],
+      );
+      return Promise.resolve(Response.json({
+        items: archived === "false"
+          ? [{
+            ...session,
+            session_id: "active",
+            status_detail: "future_reason",
+          }]
+          : [{
+            ...session,
+            session_id: "archived",
+            is_archived: true,
+            status: "resuming",
+          }],
+      }));
+    },
+  );
+  assert.deepEqual(calls, ["false", "true"]);
+  assert.equal(results.length, 2);
+  assert.equal(results[0].status_detail, "future_reason");
+  assert.equal(interpretSession(results[1]).status, "closed");
+});
+
+Deno.test("older duplicate pages cannot replace a newer provider snapshot", async () => {
+  const results = await runWithFetch(
+    DevinClient.use((client) => client.listSessions(["devin-test"])),
+    (input) => {
+      const after = new URL(String(input)).searchParams.get("after");
+      return Promise.resolve(Response.json({
+        items: [{
+          ...session,
+          updated_at: after === null ? 20 : 19,
+          status: after === null ? "resuming" : "suspended",
+        }],
+        has_next_page: after === null,
+        end_cursor: after === null ? "older" : null,
+      }));
+    },
+  );
+  assert.equal(results[0].updated_at, 20);
+  assert.equal(results[0].status, "resuming");
 });
