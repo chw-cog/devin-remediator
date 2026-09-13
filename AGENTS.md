@@ -1,3 +1,5 @@
+<!-- effect:start -->
+
 # Learning more about Effect
 
 This repository uses the Effect Typescript library.
@@ -8,3 +10,5 @@ Before writing any Effect code, first read `node_modules/effect/AGENTS.md`
 If you need to learn more about particular Effect APIs and concepts that the
 guide doesn't cover, search through the source code in
 `node_modules/effect/src`.
+
+<!-- effect:end -->
