@@ -67,6 +67,26 @@ Deno.test("malformed JSON returns 400", async () => {
   assert.deepEqual(await response.json(), { error: "Invalid JSON" });
 });
 
+Deno.test("issues.labeled is dispatched and returns an empty 200", async () => {
+  const response = await deliver(
+    JSON.stringify({
+      action: "labeled",
+      repository: { full_name: "owner/repo" },
+      issue: { number: 42 },
+      label: { name: "bug" },
+    }),
+    "issues",
+  );
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "");
+});
+
+Deno.test("webhook callback failures return a generic 500", async () => {
+  const response = await deliver('{"action":"labeled"}', "issues");
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: "Webhook handling failed" });
+});
+
 Deno.test("invalid webhook envelopes return 400", async (t) => {
   const cases = [
     { name: "null payload", body: "null" },
