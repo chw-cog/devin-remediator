@@ -6,6 +6,7 @@ COPY --chown=deno:deno deno.json deno.lock ./
 USER deno
 RUN deno install --frozen
 COPY --chown=deno:deno src ./src
+COPY --chown=deno:deno playbooks ./playbooks
 COPY --chown=deno:deno migrations ./migrations
 RUN deno check src/index.ts
 
