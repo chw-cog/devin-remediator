@@ -6,6 +6,8 @@ import { DatabaseClient } from "./database.ts";
 import { DevinClient } from "./devin.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
 import { DevinSessionRepository } from "./devin-session-repository.ts";
+import { GitHubClient } from "./github.ts";
+import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 import { WebhookEventProcessors } from "./webhook-event-processors.ts";
 
@@ -15,8 +17,12 @@ export const AppLive = Layer.merge(
     Layer.provide(DevinSessionRepository.layer),
     Layer.provide(DevinClient.layer),
     Layer.provide(WebhookEventProcessors.layer),
+    Layer.provide(GitHubCommentNotifier.layer),
   ),
-).pipe(Layer.provide(DatabaseClient.layer));
+).pipe(
+  Layer.provide(GitHubClient.layer),
+  Layer.provide(DatabaseClient.layer),
+);
 
 export const runApplication = (
   options: Deno.ServeTcpOptions = { port: 8000 },

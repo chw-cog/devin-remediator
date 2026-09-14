@@ -24,6 +24,7 @@ import {
   DevinSubmissionError,
 } from "./devin.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
+import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import {
   type DeliveryRecord,
   DevinSessionRepository,
@@ -138,8 +139,10 @@ function testLayer(
   fake: ReturnType<typeof fakeClient>,
   env: Env = {},
   processors = WebhookEventProcessors.layer,
+  notifications: GitHubCommentNotifier["Service"] = { tick: Effect.void },
 ) {
   return DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(Layer.succeed(GitHubCommentNotifier, notifications)),
     Layer.provide(processors),
     Layer.provideMerge(DevinSessionRepository.layer),
     Layer.provideMerge(DatabaseClient.layer),
@@ -188,6 +191,35 @@ const row = Effect.fnUntraced(function* (db: AppDatabase, id: string) {
   ).get();
   assert.ok(result);
   return result;
+});
+
+Deno.test("orchestrator uses the injected notifier before polling Devin", async () => {
+  const calls: string[] = [];
+  const fake = fakeClient();
+  fake.behavior.list = () =>
+    Effect.sync(() => {
+      calls.push("poll");
+      return [{ ...remote, session_id: "injected" }];
+    });
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseClient;
+      yield* seed(db, "injected", {
+        status: "submitted",
+        devinSessionId: "injected",
+      });
+      const orchestrator = yield* DevinSessionOrchestrator;
+      yield* orchestrator.tick;
+      assert.deepEqual(calls, ["notify", "poll"]);
+      assert.equal((yield* row(db, "injected")).providerLifecycle, "active");
+    }).pipe(
+      Effect.provide(testLayer(fake, {}, undefined, {
+        tick: Effect.sync(() => {
+          calls.push("notify");
+        }),
+      })),
+    ),
+  );
 });
 
 function orchestrationTest(
@@ -371,6 +403,7 @@ Deno.test("analysis collection runs through the real Devin client and persists g
     }));
   };
   const live = DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(Layer.succeed(GitHubCommentNotifier, { tick: Effect.void })),
     Layer.provide(WebhookEventProcessors.layer),
     Layer.provideMerge(DevinSessionRepository.layer),
     Layer.provideMerge(DatabaseClient.layer),
@@ -779,6 +812,7 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
     ));
   };
   const layer = DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(Layer.succeed(GitHubCommentNotifier, { tick: Effect.void })),
     Layer.provide(WebhookEventProcessors.layer),
     Layer.provideMerge(DevinSessionRepository.layer),
     Layer.provideMerge(DatabaseClient.layer),
@@ -1084,6 +1118,7 @@ Deno.test("polling reconciles paginated list responses through the real client w
     ));
   };
   const layer = DevinSessionOrchestrator.layer.pipe(
+    Layer.provide(Layer.succeed(GitHubCommentNotifier, { tick: Effect.void })),
     Layer.provide(WebhookEventProcessors.layer),
     Layer.provideMerge(DevinSessionRepository.layer),
     Layer.provideMerge(DatabaseClient.layer),
@@ -1733,6 +1768,7 @@ orchestrationTest(
       };
       yield* DevinSessionOrchestrator.use((o) => o.tick).pipe(
         Effect.provide(Layer.fresh(DevinSessionOrchestrator.layer)),
+        Effect.provideService(GitHubCommentNotifier, { tick: Effect.void }),
         Effect.provide(WebhookEventProcessors.layer),
         Effect.provideService(DevinSessionRepository, repo),
         Effect.provideService(DatabaseClient, { db }),

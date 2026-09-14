@@ -500,5 +500,5 @@ export class GitHubCommentNotifier
       });
       return GitHubCommentNotifier.of({ tick });
     }),
-  ).pipe(Layer.provide(GitHubClient.layer));
+  );
 }

@@ -15,6 +15,7 @@ import { TestClock } from "effect/testing";
 import { FetchHttpClient } from "effect/unstable/http";
 import { githubAppEnv } from "../test/fixtures/github-app.ts";
 import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
+import { GitHubAuthenticationError, GitHubClient } from "./github.ts";
 import { type AppDatabase, DatabaseClient } from "./database.ts";
 import { DevinClient, type DevinSession } from "./devin.ts";
 import { DevinSessionRepository } from "./devin-session-repository.ts";
@@ -205,7 +206,10 @@ function notificationTest(
       }).pipe(
         Effect.provide(
           Layer.merge(GitHubCommentNotifier.layer, DevinSessionRepository.layer)
-            .pipe(Layer.provideMerge(DatabaseClient.layer)),
+            .pipe(
+              Layer.provide(GitHubClient.layer),
+              Layer.provideMerge(DatabaseClient.layer),
+            ),
         ),
         Effect.provide(config(enabled)),
         Effect.provideService(FetchHttpClient.Fetch, transport.fetch),
@@ -849,6 +853,7 @@ notificationTest(
       const requests = f.http.requests.length;
       yield* GitHubCommentNotifier.use((n) => n.tick).pipe(
         Effect.provide(Layer.fresh(GitHubCommentNotifier.layer)),
+        Effect.provide(GitHubClient.layer),
         Effect.provideService(DatabaseClient, { db: f.db }),
         Effect.provide(config(true, ":memory:", "303")),
       );
@@ -958,6 +963,7 @@ notificationTest(
       yield* Deferred.await(started);
       yield* GitHubCommentNotifier.use((n) => n.tick).pipe(
         Effect.provide(Layer.fresh(GitHubCommentNotifier.layer)),
+        Effect.provide(GitHubClient.layer),
         Effect.provideService(DatabaseClient, { db: f.db }),
         Effect.provide(config()),
       );
@@ -968,7 +974,7 @@ notificationTest(
 );
 notificationTest(
   "orchestrator performs notification work before Devin polling and never infers completion or invokes controls",
-  ({ db, repository, http }) =>
+  ({ db, repository, notifier, http }) =>
     Effect.gen(function* () {
       yield* seed(db);
       yield* observe(db, repository);
@@ -1003,6 +1009,7 @@ notificationTest(
         })
       ).pipe(
         Effect.provide(DevinSessionOrchestrator.layer),
+        Effect.provideService(GitHubCommentNotifier, notifier),
         Effect.provideService(DatabaseClient, { db }),
         Effect.provideService(DevinSessionRepository, repository),
         Effect.provideService(DevinClient, client),
@@ -1011,6 +1018,40 @@ notificationTest(
       );
       assert.deepEqual(calls, ["token", "devin-list", "comment"]);
       assert.equal((yield* row(db)).status, "delivered");
+    }),
+);
+
+notificationTest(
+  "notifier uses the injected GitHub client without initializing live authentication",
+  ({ db, repository, http }) =>
+    Effect.gen(function* () {
+      yield* seed(db);
+      yield* observe(db, repository);
+      const calls: string[] = [];
+      yield* GitHubCommentNotifier.use((notifier) => notifier.tick).pipe(
+        Effect.provide(Layer.fresh(GitHubCommentNotifier.layer)),
+        Effect.provideService(GitHubClient, {
+          cached: Effect.sync(() => {
+            calls.push("cached");
+            return undefined;
+          }),
+          authenticate: () =>
+            Effect.sync(() => {
+              calls.push("authenticate");
+            }).pipe(
+              Effect.andThen(Effect.fail(new GitHubAuthenticationError())),
+            ),
+          invalidate: Effect.void,
+        }),
+        Effect.provideService(DatabaseClient, { db }),
+        Effect.provide(config()),
+      );
+      assert.deepEqual(calls, ["cached", "authenticate"]);
+      assert.equal(http.requests.length, 0);
+      const saved = yield* row(db);
+      assert.equal(saved.status, "pending");
+      assert.equal(saved.attempts, 1);
+      assert.equal(saved.lastFailure, "unavailable");
     }),
 );
 
@@ -1028,7 +1069,10 @@ Deno.test("SQLite reopen preserves disabled work, failed receipts, immutable App
     Effect.runPromise(program.pipe(
       Effect.provide(
         Layer.merge(GitHubCommentNotifier.layer, DevinSessionRepository.layer)
-          .pipe(Layer.provideMerge(DatabaseClient.layer)),
+          .pipe(
+            Layer.provide(GitHubClient.layer),
+            Layer.provideMerge(DatabaseClient.layer),
+          ),
       ),
       Effect.provide(config(enabled, `${directory}/restart.sqlite`)),
       Effect.provideService(FetchHttpClient.Fetch, transport.fetch),

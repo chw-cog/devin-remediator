@@ -8,6 +8,7 @@ import { DevinClient } from "./devin.ts";
 import { playbook } from "../test/fixtures/playbook.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
 import { DevinSessionRepository } from "./devin-session-repository.ts";
+import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 import { AppConfig } from "./config.ts";
 import { applicationEnvironment, runApplication } from "./index.ts";
@@ -27,6 +28,9 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
   const TestLive = Layer.merge(
     WebhookDeliveryHandler.layer,
     DevinSessionOrchestrator.layer.pipe(
+      Layer.provide(
+        Layer.succeed(GitHubCommentNotifier, { tick: Effect.void }),
+      ),
       Layer.provide(DevinSessionRepository.layer),
       Layer.provide(WebhookEventProcessors.layer),
     ),
@@ -179,6 +183,9 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
   const TestLive = Layer.merge(
     WebhookDeliveryHandler.layer,
     DevinSessionOrchestrator.layer.pipe(
+      Layer.provide(
+        Layer.succeed(GitHubCommentNotifier, { tick: Effect.void }),
+      ),
       Layer.provide(DevinSessionRepository.layer),
       Layer.provide(
         Layer.effect(

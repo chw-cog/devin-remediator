@@ -377,5 +377,5 @@ export class DevinSessionOrchestrator extends Context.Service<
       );
       return DevinSessionOrchestrator.of({ tick, run });
     }),
-  ).pipe(Layer.provide(GitHubCommentNotifier.layer));
+  );
 }
