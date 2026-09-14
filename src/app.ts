@@ -1,7 +1,9 @@
-import { Cause, Clock, Effect, Schema } from "effect";
+import { Cause, Clock, Effect, Option, Schema } from "effect";
 import { Hono } from "hono";
 import { causeFields } from "./logging.ts";
 import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
+import { Metrics } from "./metrics.ts";
+import { createDashboard } from "./dashboard.ts";
 
 const decodeDelivery = Schema.decodeUnknownEffect(Schema.Struct({
   id: Schema.NonEmptyString,
@@ -14,6 +16,10 @@ export const createApp = Effect.gen(function* () {
   const handler = yield* WebhookDeliveryHandler;
   const runPromise = Effect.runPromiseWith(yield* Effect.context());
   const app = new Hono();
+  const metrics = yield* Effect.serviceOption(Metrics);
+  if (Option.isSome(metrics) && metrics.value.dashboard !== null) {
+    app.route("/", createDashboard(metrics.value.dashboard));
+  }
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 

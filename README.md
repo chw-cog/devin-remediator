@@ -126,6 +126,35 @@ For operational tasks, see these guides:
 - [Compose configuration checks](docs/lifecycle-compose.md) explains how to
   verify environment forwarding.
 
+## Enable the metrics dashboard
+
+1. Add **Pull requests: Read-only** to the GitHub App permissions and approve
+   the updated installation permissions. Keep **Issues: Read and write**.
+2. Set these environment variables:
+
+   ```dotenv
+   DASHBOARD_REPOSITORY=owner/repo
+   DASHBOARD_USERNAME=viewer
+   DASHBOARD_PASSWORD=<strong-shared-password>
+   ```
+
+3. Recreate the app container to apply the settings.
+4. Open `https://<your-host>/dashboard` and sign in with the configured
+   credentials. Use HTTPS when deployed because Basic auth does not encrypt
+   credentials.
+
+The dashboard shows issue and PR counts, ACU usage, observed completion times,
+and up to three ongoing or attention-needed sessions. Repository totals come
+from GitHub. Devin metrics cover work tracked by this app only.
+
+A small script refreshes the numbers and session cards every 30 seconds while
+the tab is visible. The page also works without JavaScript.
+`GET /api/v1/metrics` returns the same snapshot using the same login.
+
+Leave the repository and password unset to disable the dashboard. See
+[metric definitions and dashboard configuration](docs/metrics-dashboard.md) for
+coverage, caching, and failure behavior.
+
 ## View logs
 
 The app emits structured JSON logs for webhook receipt, session creation,

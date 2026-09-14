@@ -71,3 +71,35 @@ export const AppConfig = Config.all({
 });
 
 export type AppConfig = Config.Success<typeof AppConfig>;
+
+export const RepositoryName = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/),
+);
+
+export const DashboardConfig = Config.all({
+  repository: Config.String("DASHBOARD_REPOSITORY").pipe(
+    Config.withDefault(""),
+  ),
+  username: Config.String("DASHBOARD_USERNAME").pipe(
+    Config.withDefault("viewer"),
+  ),
+  password: Config.Redacted("DASHBOARD_PASSWORD").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+}).pipe(Config.mapEffect((config) => {
+  if (config.repository === "" && Redacted.value(config.password) === "") {
+    return Effect.succeed(null);
+  }
+  return Schema.decodeUnknownEffect(Schema.Struct({
+    repository: RepositoryName,
+    username: Schema.NonEmptyString.check(Schema.isPattern(/^[^:\r\n]+$/)),
+    hasPassword: Schema.Literal(true),
+  }))({
+    repository: config.repository,
+    username: config.username,
+    hasPassword: Redacted.value(config.password).trim().length > 0,
+  }).pipe(
+    Effect.as({ ...config, repository: config.repository.toLowerCase() }),
+    Effect.mapError((cause) => new Config.ConfigError(cause)),
+  );
+}));

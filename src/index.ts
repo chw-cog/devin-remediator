@@ -10,9 +10,11 @@ import { GitHubClient } from "./github.ts";
 import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 import { WebhookEventProcessors } from "./webhook-event-processors.ts";
+import { Metrics } from "./metrics.ts";
 
-export const AppLive = Layer.merge(
+export const AppLive = Layer.mergeAll(
   WebhookDeliveryHandler.layer,
+  Metrics.layer.pipe(Layer.provide(GitHubClient.metricsLayer)),
   DevinSessionOrchestrator.layer.pipe(
     Layer.provide(DevinSessionRepository.layer),
     Layer.provide(DevinClient.layer),
@@ -62,6 +64,9 @@ export const applicationEnvironment = (
     "GITHUB_APP_ID",
     "GITHUB_APP_INSTALLATION_ID",
     "GITHUB_APP_PRIVATE_KEY",
+    "DASHBOARD_REPOSITORY",
+    "DASHBOARD_USERNAME",
+    "DASHBOARD_PASSWORD",
     "SQLITE_DB_FILEPATH",
   ].map((name) => [name, get(name)]));
 

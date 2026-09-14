@@ -1,5 +1,6 @@
 {
   "nodeModulesDir": "auto",
+  "exclude": [".lavish/"],
   "fmt": {
     "exclude": [".agents/", ".pi/"]
   },
@@ -7,8 +8,8 @@
     "plugins": ["./tools/declaration-spacing.ts"]
   },
   "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_SESSION_BUDGET,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,GITHUB_APP_ID,GITHUB_APP_INSTALLATION_ID,GITHUB_APP_PRIVATE_KEY,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV --watch src/index.ts",
-    "start": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_SESSION_BUDGET,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,GITHUB_APP_ID,GITHUB_APP_INSTALLATION_ID,GITHUB_APP_PRIVATE_KEY,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV src/index.ts",
+    "dev": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_SESSION_BUDGET,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,GITHUB_APP_ID,GITHUB_APP_INSTALLATION_ID,GITHUB_APP_PRIVATE_KEY,DASHBOARD_REPOSITORY,DASHBOARD_USERNAME,DASHBOARD_PASSWORD,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV --watch src/index.ts",
+    "start": "deno run --allow-net --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-env=LOG_LEVEL,DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_MAX_SESSION_BUDGET,DEVIN_MAX_CONCURRENT_SESSIONS,DEVIN_MAX_ATTEMPTS,DEVIN_ANALYSIS_MAX_ATTEMPTS,DEVIN_RETAINED_POLL_INTERVAL_MS,DEVIN_ORCHESTRATOR_INTERVAL_MS,DEVIN_SUBMITTING_TIMEOUT_SECONDS,GITHUB_WEBHOOK_SECRET,GITHUB_APP_ID,GITHUB_APP_INSTALLATION_ID,GITHUB_APP_PRIVATE_KEY,DASHBOARD_REPOSITORY,DASHBOARD_USERNAME,DASHBOARD_PASSWORD,SQLITE_DB_FILEPATH,LIBSQL_JS_DEV src/index.ts",
     "check": "deno fmt --check && deno lint && deno check src/*.ts drizzle.config.ts && deno check test/lifecycle-observation-worker.ts",
     "test": "deno test --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-net=127.0.0.1 --allow-env=LIBSQL_JS_DEV",
     "session-admin": "deno run --allow-read --allow-write --allow-ffi --allow-sys=cpus,networkInterfaces,hostname --allow-net=api.devin.ai --allow-env=DEVIN_API_KEY,DEVIN_ORGANIZATION_ID,DEVIN_SUBMITTING_TIMEOUT_SECONDS,LIBSQL_JS_DEV src/session-admin.ts",
