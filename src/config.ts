@@ -29,7 +29,10 @@ const githubApp = Config.all({
     Schema.Struct({
       appId,
       installationId: appId,
-      validKey: Schema.Literal(true),
+      validKey: Schema.Literal(true).annotate({
+        message:
+          "GITHUB_APP_PRIVATE_KEY must contain a valid RSA private key in PEM format; preserve the original header, footer, and line breaks",
+      }),
     }),
   )({ appId: app.appId, installationId: app.installationId, validKey }).pipe(
     Effect.as(app),

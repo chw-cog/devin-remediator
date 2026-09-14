@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { inspect } from "node:util";
 import { ConfigProvider, Effect, Redacted, Result } from "effect";
 import { AppConfig } from "./config.ts";
 import { githubAppEnv } from "../test/fixtures/github-app.ts";
@@ -69,6 +70,39 @@ Deno.test("GitHub App config is optional, rejects partial or invalid credentials
     for (const value of [undefined, "", "invalid", "0", "-1", "1.5"]) {
       await assert.rejects(load({ ...githubAppEnv, [name]: value }));
     }
+  }
+});
+
+Deno.test("invalid GitHub App keys report the setting and PEM requirement without leaking secrets", async () => {
+  for (
+    const privateKey of [
+      "PRIVATE invalid key must not appear in diagnostics",
+      githubAppEnv.GITHUB_APP_PRIVATE_KEY.replace(
+        "BEGIN PRIVATE KEY",
+        "BEGIN\n PRIVATE KEY",
+      ),
+    ]
+  ) {
+    const result = await Effect.runPromise(AppConfig.pipe(
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+        ...env,
+        ...githubAppEnv,
+        GITHUB_APP_PRIVATE_KEY: privateKey,
+      }))),
+      Effect.result,
+    ));
+    assert.ok(Result.isFailure(result));
+    assert.match(result.failure.message, /GITHUB_APP_PRIVATE_KEY/);
+    assert.match(result.failure.message, /RSA private key.*PEM/);
+    const diagnostics = [
+      result.failure.toString(),
+      JSON.stringify(result.failure),
+      inspect(result.failure, { depth: null }),
+    ].join("\n");
+    assert.ok(!diagnostics.includes(privateKey));
+    assert.ok(
+      !diagnostics.includes(githubAppEnv.GITHUB_APP_PRIVATE_KEY.split("\n")[1]),
+    );
   }
 });
 
