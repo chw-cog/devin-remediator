@@ -19,6 +19,38 @@ Issue URL; optional base branch, otherwise the repository's default branch.
 - For suspected security issues, stop public work and advise the user to consult
   the repository's private reporting policy and contact the repository admin.
 
+## Keep the issue updated
+
+As soon as you pick up the issue, before starting step 1, post one progress
+comment on the issue:
+
+> I've picked up this issue and will look into it. I'm reviewing the report and
+> repository instructions now.
+
+Save the comment ID or URL. Edit that same comment throughout the session
+instead of posting new progress comments. If resuming, reuse your existing
+progress comment.
+
+After every procedure step, update the comment before starting the next step.
+Also update it when your current activity changes within a step, including
+waiting for CI or investigating a failure. Keep it to a few short lines:
+
+- Status: the current remediation stage or outcome.
+- So far: a concise summary of confirmed findings and completed work.
+- Now: what you are doing or waiting for.
+
+Include the PR link once available. Replace outdated text rather than appending
+a running log. Do not publish secrets or suspected security details.
+
+If you are stuck and must pause for human input or leave the issue incomplete,
+add the `need-human` label to the issue without removing existing labels. Update
+the same comment before stopping: state that work is blocked, summarize
+attempts, and name the blocker and smallest action needed to resume. This
+applies at any step, including when the session budget runs low.
+
+If you cannot post or edit the comment or add the label, report the failed
+action and required access in your session response. Do not claim it succeeded.
+
 ## Procedure
 
 ### 1. Establish the report
@@ -101,6 +133,10 @@ only with evidence. Report permission, approval, infrastructure, or unrelated
 blockers rather than retrying indefinitely.
 
 ## Completion
+
+Before ending the session, edit the progress comment with the final outcome,
+verification status, and PR link if available. State that no work is currently
+in progress. For incomplete work, follow the `need-human` handoff above.
 
 Return the outcome, PR URL and final commit, cause, fix, verification commands,
 short verbatim failing-then-passing output, CI results, and remaining risks. For
