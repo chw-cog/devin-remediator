@@ -14,6 +14,7 @@ const diagnose = (id = "remote-one") =>
       }),
     ),
   );
+
 for (
   const [status, outcome] of [
     [404, "not_found"],
@@ -50,6 +51,7 @@ for (
     assert.equal(requests, 1);
   });
 }
+
 Deno.test("diagnoseSession validates identity, organization, and response shape", async () => {
   for (
     const remote of [
@@ -78,6 +80,7 @@ Deno.test("diagnoseSession validates identity, organization, and response shape"
     );
   }
 });
+
 Deno.test("diagnoseSession encodes remote identity as one path segment", async () => {
   const id = "remote/one?x=y";
   const result = await Effect.runPromise(
@@ -91,6 +94,7 @@ Deno.test("diagnoseSession encodes remote identity as one path segment", async (
   );
   assert.equal(result.outcome, "found");
 });
+
 Deno.test("diagnoseSession classifies transport failure and bounds timeout without retry", async () => {
   assert.deepEqual(
     await Effect.runPromise(

@@ -38,6 +38,7 @@ const failed = Effect.fnUntraced(
     }
   },
 );
+
 const foundFetch: typeof globalThis.fetch = (input, init) => {
   assert.equal(init?.method, "GET");
   const id = decodeURIComponent(

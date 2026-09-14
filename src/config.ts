@@ -5,6 +5,7 @@ const appId = Schema.Int.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
 );
+
 const githubApp = Config.all({
   appId: Config.schema(appId, "GITHUB_APP_ID").pipe(Config.withDefault(0)),
   installationId: Config.schema(appId, "GITHUB_APP_INSTALLATION_ID").pipe(

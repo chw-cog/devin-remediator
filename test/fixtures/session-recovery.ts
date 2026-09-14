@@ -31,6 +31,7 @@ export const recoveryRemote = (
   title: "PRIVATE question",
   structured_output: { outcome: "needs_human", summary: "PRIVATE question" },
 });
+
 export const seedRecovery = Effect.fnUntraced(
   function* (
     db: AppDatabase,
@@ -59,6 +60,7 @@ export const seedRecovery = Effect.fnUntraced(
     return row;
   },
 );
+
 export function recoveryLayer(path: string, maxSessions = 1) {
   return DevinSessionOrchestrator.layer.pipe(
     Layer.provide(WebhookEventProcessors.layer),
@@ -81,12 +83,14 @@ export function recoveryLayer(path: string, maxSessions = 1) {
     }))),
   );
 }
+
 type RecoveryServices =
   | DatabaseClient
   | DevinClient
   | DevinSessionRepository
   | DevinSessionOrchestrator
   | SessionAdministration;
+
 export function recoveryTest<E>(
   name: string,
   effect: Effect.Effect<void, E, RecoveryServices>,
@@ -107,6 +111,7 @@ export function recoveryTest<E>(
     }
   });
 }
+
 export const missingFetch: typeof globalThis.fetch = (_input, init) => {
   if (init?.method !== "GET") {
     throw new Error("Remote writes forbidden in recovery tests");

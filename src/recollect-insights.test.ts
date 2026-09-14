@@ -22,6 +22,7 @@ import {
 
 const epoch = "1970-01-01T00:00:00.000Z";
 const future = "9999-01-01T00:00:00.000Z";
+
 const remote: DevinSession = {
   session_id: "remote",
   url: "https://app.devin.ai/sessions/remote",
@@ -34,6 +35,7 @@ const remote: DevinSession = {
   tags: [],
   pull_requests: [],
 };
+
 const completed = {
   status: "submitted" as const,
   devinSessionId: "remote",
@@ -42,6 +44,7 @@ const completed = {
   activeWork: false,
   nextObservationAt: future,
 };
+
 const seed = Effect.fnUntraced(
   function* (
     db: AppDatabase,
@@ -68,6 +71,7 @@ const seed = Effect.fnUntraced(
     });
   },
 );
+
 const row = Effect.fnUntraced(function* (db: AppDatabase, id = "local") {
   const saved = yield* db.select().from(devinSessions).where(
     eq(devinSessions.id, id),

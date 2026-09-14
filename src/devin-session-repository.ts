@@ -42,15 +42,20 @@ import {
 import type { AppDatabase } from "./database.ts";
 
 export type SessionRecord = typeof devinSessions.$inferSelect;
+
 export type DeliveryRecord = typeof githubWebhookDeliveries.$inferSelect;
+
 export type SessionWork = {
   readonly session: SessionRecord;
   readonly delivery: DeliveryRecord;
 };
+
 export type ObservationClaim = SessionWork & {
   readonly session: SessionRecord & { readonly devinSessionId: string };
 };
+
 export type AnalysisClaim = SessionRecord & { readonly devinSessionId: string };
+
 export const analysisBatchSize = 3;
 
 export type AnalysisResult =
@@ -61,11 +66,14 @@ export type AnalysisResult =
   };
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+
 const appendOutput = (output: RemediationOutput) =>
   sql`json_insert(${devinSessions.outputs}, '$[#]', json(${
     JSON.stringify(output)
   }))`;
+
 const databaseError = (cause: unknown) => new DatabaseError({ cause });
+
 const observeClaim =
   (operation: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>, claim: SessionRecord) =>
@@ -79,6 +87,7 @@ const observeClaim =
         claim_version: claim.claimVersion,
       }),
     );
+
 const ownsClaim = (claim: SessionRecord) =>
   and(
     eq(devinSessions.id, claim.id),

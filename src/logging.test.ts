@@ -23,12 +23,14 @@ const env = {
   GITHUB_WEBHOOK_SECRET: "SECRET_WEBHOOK_KEY",
   SQLITE_DB_FILEPATH: ":memory:",
 };
+
 const body = JSON.stringify({
   action: "labeled",
   label: { name: "devin" },
   repository: { full_name: "owner/repo" },
   issue: { number: 42, body: "SECRET_ISSUE_BODY" },
 });
+
 const signature = `sha256=${
   createHmac("sha256", env.GITHUB_WEBHOOK_SECRET).update(body).digest("hex")
 }`;

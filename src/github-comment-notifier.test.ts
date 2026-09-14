@@ -47,6 +47,7 @@ const remote: DevinSession = {
     next_action: "PRIVATE ACTION",
   },
 };
+
 const config = (
   enabled = true,
   filepath = ":memory:",
@@ -61,6 +62,7 @@ const config = (
       ? { ...githubAppEnv, GITHUB_APP_INSTALLATION_ID: installationId }
       : {}),
   }));
+
 const seed = Effect.fnUntraced(
   function* (
     db: AppDatabase,
@@ -87,6 +89,7 @@ const seed = Effect.fnUntraced(
     });
   },
 );
+
 const observe = Effect.fnUntraced(
   function* (
     db: AppDatabase,
@@ -101,6 +104,7 @@ const observe = Effect.fnUntraced(
     assert.equal(yield* repository.recordObservation(claim, state), true);
   },
 );
+
 const row = Effect.fnUntraced(function* (db: AppDatabase) {
   const [value] = yield* db.select().from(notifications).orderBy(
     notifications.sequence,
@@ -108,6 +112,7 @@ const row = Effect.fnUntraced(function* (db: AppDatabase) {
   assert.ok(value);
   return value;
 });
+
 const due = Effect.fnUntraced(function* (db: AppDatabase) {
   const saved = yield* row(db);
   const [slot] = yield* db.select().from(gate);
@@ -122,6 +127,7 @@ const due = Effect.fnUntraced(function* (db: AppDatabase) {
     ),
   );
 });
+
 type Captured = {
   url: URL;
   kind: "token" | "comment" | "lookup";
@@ -131,6 +137,7 @@ type Captured = {
   authorization: string | null;
   redirect: RequestRedirect | undefined;
 };
+
 function http() {
   const requests: Captured[] = [];
   const behavior = {
@@ -180,6 +187,7 @@ function http() {
     posts: () => requests.filter((r) => r.kind === "comment"),
   };
 }
+
 type Fixture = {
   db: AppDatabase;
   repository: DevinSessionRepository["Service"];
@@ -187,6 +195,7 @@ type Fixture = {
   http: ReturnType<typeof http>;
   logs: string[];
 };
+
 function notificationTest(
   name: string,
   test: (fixture: Fixture) => Effect.Effect<void, unknown, Scope.Scope>,
@@ -223,6 +232,7 @@ function notificationTest(
     );
   });
 }
+
 const prepare = Effect.fnUntraced(
   function* ({ db, repository, notifier }: Fixture) {
     yield* seed(db);
@@ -231,6 +241,7 @@ const prepare = Effect.fnUntraced(
     yield* due(db);
   },
 );
+
 const ambiguous = Effect.fnUntraced(function* (fixture: Fixture) {
   yield* prepare(fixture);
   const normal = fixture.http.behavior.respond;
@@ -898,6 +909,7 @@ for (
       }),
   );
 }
+
 for (
   const [repo, issue, url] of [
     ["owner/repo", 42, "https://evil.test/PRIVATE"],
@@ -931,6 +943,7 @@ for (
       }),
   );
 }
+
 for (const alreadyBlocked of [false, true]) {
   notificationTest(
     `safe metadata repair delivers the existing ${
@@ -1003,6 +1016,7 @@ notificationTest(
       assert.equal(http.posts().length, 1);
     }),
 );
+
 for (const status of [401, 403, 404, 422, 429, 503]) {
   notificationTest(
     `App token HTTP ${status} has no hidden retries and honors durable rate limits`,
@@ -1030,6 +1044,7 @@ for (const status of [401, 403, 404, 422, 429, 503]) {
       }),
   );
 }
+
 for (const status of [302, 401, 403, 422, 429, 503]) {
   notificationTest(
     `comment HTTP ${status} never redirects or retries inside its leased tick`,
@@ -1106,6 +1121,7 @@ notificationTest(
       assert.equal(http.posts().length, 2);
     }),
 );
+
 notificationTest(
   "installation rotation never reinterprets ownership of an ambiguous flight",
   (f) =>
@@ -1128,6 +1144,7 @@ notificationTest(
       assert.equal(f.http.requests.length, requests);
     }),
 );
+
 notificationTest(
   "stale receipt fencing checks time after database acquisition",
   (f) =>
@@ -1177,6 +1194,7 @@ notificationTest(
       assert.equal(http.posts().length, 1);
     }),
 );
+
 notificationTest(
   "a timed-out comment aborts and retains its possible-send record",
   (f) =>
@@ -1206,6 +1224,7 @@ notificationTest(
       assert.equal((yield* row(f.db)).leaseUntil, 0);
     }),
 );
+
 notificationTest(
   "concurrent notifier instances cannot acquire another shared HTTP slot",
   (f) =>
@@ -1234,6 +1253,7 @@ notificationTest(
       yield* Fiber.join(first);
     }),
 );
+
 notificationTest(
   "orchestrator performs notification work before Devin polling and never infers completion or invokes controls",
   ({ db, repository, notifier, http }) =>

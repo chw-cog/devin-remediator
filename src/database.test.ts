@@ -19,7 +19,9 @@ const TestLive = DatabaseClient.layer.pipe(Layer.provide(
     SQLITE_DB_FILEPATH: ":memory:",
   })),
 ));
+
 const insertedAt = "2026-01-01T00:00:00.000Z";
+
 const delivery = {
   id: "delivery-row",
   deliveryId: "github-1",

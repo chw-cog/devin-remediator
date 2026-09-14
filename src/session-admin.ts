@@ -26,15 +26,19 @@ const root = Command.make("session-admin").pipe(
     "Local reconciliation only. Remote execution is unchanged; no remote control operations.",
   ),
 );
+
 const id = Argument.String("id").pipe(
   Argument.withSchema(Schema.NonEmptyString),
 );
+
 const reason = Flag.String("reason").pipe(Flag.withSchema(
   Schema.String.check(Schema.isPattern(/\S/), Schema.isMaxLength(500)),
 ));
+
 const revision = Flag.String("revision").pipe(
   Flag.withSchema(Schema.NonEmptyString),
 );
+
 const remoteId = Flag.String("remote-id").pipe(
   Flag.withSchema(Schema.NonEmptyString),
 );
@@ -55,7 +59,9 @@ const withAdministration = Effect.fnUntraced(function* <A, E>(
     ),
   );
 });
+
 const print = (value: unknown) => Console.log(JSON.stringify(value));
+
 const execute = Effect.fnUntraced(function* (request: SessionAdminRequest) {
   const operation = SessionAdministration.use((admin) => {
     if (request.action === "resolve") return admin.execute(request);

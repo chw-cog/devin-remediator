@@ -32,6 +32,7 @@ const Reason = Schema.String.check(
   Schema.isPattern(/\S/),
   Schema.isMaxLength(500),
 );
+
 export const SessionAdminRequest = Schema.Struct({
   id: Schema.NonEmptyString,
   action: Schema.Literals(["diagnose", "associate", "resolve", "resume"]),
@@ -39,9 +40,13 @@ export const SessionAdminRequest = Schema.Struct({
   remoteId: Schema.optional(Schema.NonEmptyString),
   reason: Schema.optional(Reason),
 });
+
 export type SessionAdminRequest = typeof SessionAdminRequest.Type;
+
 type DiagnosticGetter = (id: string) => Effect.Effect<SessionDiagnostic>;
+
 type Transaction = Parameters<Parameters<AppDatabase["transaction"]>[0]>[0];
+
 type Snapshot = {
   session: SessionRecord;
   notifications: (typeof attentionNotifications.$inferSelect)[];
@@ -79,6 +84,7 @@ const summary = (row: SessionRecord) => ({
 });
 
 type SessionSummary = ReturnType<typeof summary>;
+
 type Inspection = SessionSummary & {
   revision: string;
   events: ReadonlyArray<{
@@ -91,7 +97,9 @@ type Inspection = SessionSummary & {
     reasonRecorded: boolean;
   }>;
 };
+
 type AdminResult = { outcome: string; warning: string; session: Inspection };
+
 const mapError = (cause: unknown) =>
   cause instanceof SessionAdminError ? cause : new DatabaseError({ cause });
 

@@ -12,10 +12,12 @@ import {
 const leaseMs = 60000;
 const spacingMs = 3000;
 const graceMs = 60000;
+
 const positiveId = Schema.Int.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
 );
+
 const Comment = Schema.Struct({
   id: positiveId,
   body: Schema.String,
@@ -23,21 +25,27 @@ const Comment = Schema.Struct({
     Schema.NullOr(Schema.Struct({ id: positiveId })),
   ),
 });
+
 const Target = Schema.Struct({
   repo: Schema.String.check(
     Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/),
   ),
   issueNumber: positiveId,
 });
+
 const RemoteId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]+$/));
 const epoch = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
+
 type Notification = typeof notifications.$inferSelect;
+
 type Action = "token" | "post" | "lookup";
+
 type Claim = {
   readonly row: Notification;
   readonly gateVersion: number;
   readonly action: Action;
 };
+
 type Outcome =
   | { readonly kind: "token"; readonly cooldown: number }
   | {
@@ -59,7 +67,9 @@ type Outcome =
     readonly httpStatus: number;
     readonly rateLimited: boolean;
   };
+
 const marker = (row: Notification) => `<!-- devin-attention:${row.id} -->`;
+
 const render = (row: Notification): string | null => {
   if (!Schema.is(RemoteId)(row.remoteId)) return null;
   const url = `https://app.devin.ai/sessions/${row.remoteId}`;
@@ -76,8 +86,10 @@ const render = (row: Notification): string | null => {
     marker(row)
   }`;
 };
+
 const commentPath = (row: Notification) =>
   `/repos/${row.repo}/issues/${row.issueNumber}/comments`;
+
 const nextPage = (link: string | null, row: Notification): number | null => {
   if (!link) return null;
   let next: number | null = null;
@@ -107,6 +119,7 @@ const nextPage = (link: string | null, row: Notification): number | null => {
   }
   return next;
 };
+
 const cooldownUntil = (headers: Headers, status: number, now: number) => {
   let until = now + spacingMs;
   const retry = headers.get("retry-after");
@@ -127,6 +140,7 @@ const cooldownUntil = (headers: Headers, status: number, now: number) => {
   if (status === 429) until = Math.max(until, now + 60000);
   return Math.ceil(until);
 };
+
 export class GitHubCommentNotifier
   extends Context.Service<GitHubCommentNotifier, {
     readonly tick: Effect.Effect<void, DatabaseError>;

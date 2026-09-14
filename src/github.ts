@@ -8,6 +8,7 @@ const Token = Schema.Struct({
   token: Schema.NonEmptyString,
   expiresAt: Schema.String,
 });
+
 const silent = { debug() {}, info() {}, warn() {}, error() {} };
 
 export class GitHubAuthenticationError

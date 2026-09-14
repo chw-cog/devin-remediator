@@ -127,6 +127,7 @@ export const DevinSession = Schema.Struct({
 export type DevinSession = typeof DevinSession.Type;
 
 export const SessionAnalysis = Schema.JsonObject;
+
 export type SessionAnalysis = typeof SessionAnalysis.Type;
 
 export const DevinSessionWithInsights = Schema.Struct({
@@ -136,6 +137,7 @@ export const DevinSessionWithInsights = Schema.Struct({
   session_size: Schema.Literals(["xs", "s", "m", "l", "xl"]),
   analysis: Schema.optional(Schema.NullOr(SessionAnalysis)),
 });
+
 export type DevinSessionWithInsights = typeof DevinSessionWithInsights.Type;
 
 export type ProviderLifecycle =
@@ -340,7 +342,9 @@ const decodeSessionIds = Schema.decodeUnknownEffect(
     Schema.isMaxLength(sessionBatchSize),
   ),
 );
+
 const encodeSessionBody = HttpClientRequest.schemaBodyJson(CreateSessionParams);
+
 const encodePlaybookBody = HttpClientRequest.schemaBodyJson(
   CreatePlaybookParams,
 );

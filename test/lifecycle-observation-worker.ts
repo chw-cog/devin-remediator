@@ -13,7 +13,9 @@ const makeRuntime = (env: Record<string, string>) =>
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
     ),
   );
+
 let runtime: ReturnType<typeof makeRuntime> | undefined;
+
 self.onmessage = async (event) => {
   try {
     if (event.data.action === "initialize") {

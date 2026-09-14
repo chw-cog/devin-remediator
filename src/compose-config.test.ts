@@ -7,12 +7,14 @@ import { applicationEnvironment } from "./index.ts";
 
 const composePath = fileURLToPath(new URL("../compose.yaml", import.meta.url));
 const compose = Deno.readTextFileSync(composePath);
+
 const required = {
   DEVIN_API_KEY: "synthetic-compose-api-key",
   DEVIN_ORGANIZATION_ID: "synthetic-compose-org",
   GITHUB_WEBHOOK_SECRET: "synthetic-compose-webhook-secret",
   SQLITE_DB_FILEPATH: "/data/compose-test.sqlite",
 };
+
 const defaults = {
   DEVIN_MAX_SESSION_BUDGET: "10",
   DEVIN_MAX_CONCURRENT_SESSIONS: "3",
@@ -22,18 +24,24 @@ const defaults = {
   DEVIN_ORCHESTRATOR_INTERVAL_MS: "3000",
   DEVIN_SUBMITTING_TIMEOUT_SECONDS: "60",
 };
+
 const optional = Object.keys(githubAppEnv);
+
 type ContainerEnvironment = Record<string, string | null>;
+
 type RenderEnvironment = (env: Env) => Promise<ContainerEnvironment>;
 
 // Deliberately not a general YAML parser: reject any unreviewed mapping syntax.
 const environmentBlock = compose.match(/^ {4}environment:\n((?: {6}.+\n)+)/m);
+
 assert.ok(environmentBlock, "Compose must define app.environment");
+
 const entries = environmentBlock[1].trimEnd().split("\n").map((line) => {
   const entry = line.match(/^ {6}([A-Z_]+):(?: (.+))?$/);
   assert.ok(entry, "Unexpected Compose environment mapping syntax");
   return [entry[1], entry[2] ?? ""] as const;
 });
+
 const forwarding = Object.fromEntries(entries);
 
 const renderFixture: RenderEnvironment = (env) =>
