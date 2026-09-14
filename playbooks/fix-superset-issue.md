@@ -122,9 +122,9 @@ Review the diff. Inconclusive or different-surface results are not passes.
 ### 6. Open and monitor the PR
 
 After local verification, open one PR using the current template. Include the
-issue, cause, fix, reproduction, verification, and limitations.
-In the PR's verification section, include relevant screenshots or videos captured
-during the process.
+issue, cause, fix, reproduction, verification, and limitations. In the PR's
+verification section, include relevant screenshots or videos captured during the
+process.
 
 Check PR state before each CI poll, edit, retry, or push. If closed or merged,
 stop and report the outcome. Do not reopen or replace the PR.
