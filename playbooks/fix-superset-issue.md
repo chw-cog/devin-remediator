@@ -51,9 +51,9 @@ applies at any step, including when the session budget runs low.
 If you cannot post or edit the comment or add the label, report the failed
 action and required access in your session response. Do not claim it succeeded.
 
-Before investigating, reproducing, or verifying an existing PR, confirm that
-the issue progress comment exists and save its ID or URL. Reuse it when
-resuming. Finding an existing fix does not waive this requirement.
+Before investigating, reproducing, or verifying an existing PR, confirm that the
+issue progress comment exists and save its ID or URL. Reuse it when resuming.
+Finding an existing fix does not waive this requirement.
 
 ## Procedure
 
