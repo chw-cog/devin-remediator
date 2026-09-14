@@ -20,8 +20,9 @@ GITHUB_WEBHOOK_SECRET=<your-webhook-secret>
 SQLITE_DB_FILEPATH=/data/db.sql
 ```
 
-Docker Compose loads `.env` automatically and passes these values to the app.
-Exported shell variables take precedence. `.env` is ignored by Git.
+Docker Compose loads `.env` automatically and passes these values to the app,
+along with the optional lifecycle and GitHub App settings below. Exported shell
+variables take precedence. `.env` is ignored by Git.
 
 Start the app:
 
@@ -59,14 +60,11 @@ fractional, and nonnumeric values fail configuration loading. This is our
 conservative, adjustable default, not Devin's API default or a guarantee of
 completion time. It may be tight for Enterprise workloads.
 
-For a custom Docker Compose setup, explicitly forward the variable in
-`app.environment`, for example
-`DEVIN_MAX_SESSION_BUDGET: ${DEVIN_MAX_SESSION_BUDGET:-10}`. A value in your
-shell or `.env` alone does not add it to the container environment. Recreate the
-app container after changing its environment. This setting does not change the
-budget of an existing session. See
-[session budget rationale](docs/devin-session-budget.md) for the provider
-guidance and limits of this choice.
+The checked-in Compose file forwards `DEVIN_MAX_SESSION_BUDGET` from your shell
+or `.env`, defaulting to `10` when absent or empty. Recreate the app container
+after changing its environment. This setting does not change the budget of an
+existing session. See [session budget rationale](docs/devin-session-budget.md)
+for the provider guidance and limits of this choice.
 
 ## Enable issue attention comments with a GitHub App
 
@@ -87,9 +85,12 @@ GITHUB_APP_PRIVATE_KEY=<complete-RSA-private-key-PEM>
 
 Only one installation is supported per deployment. No OAuth client secret or
 personal access token is used. The inbound webhook secret is separate from the
-App private key. Container deployments must explicitly forward these three
-variables through their deployment configuration. The checked-in Compose file
-does not forward them automatically.
+App private key. The checked-in Compose file forwards all three variables from
+your shell or `.env`, leaving absent credentials unset in the container. For a
+multiline PEM in `.env`, enclose the complete value in single quotes and
+preserve its actual line breaks. Recreate the app container after changing
+credentials. Other deployment configurations must also forward these optional
+variables.
 
 With all three values absent or empty, remediation continues and startup logs
 `attention.delivery_disabled`. Pending attention work remains in SQLite. Partial
@@ -234,10 +235,13 @@ is a local advisory, never an age-based shutdown of active work.
 `DEVIN_RETAINED_POLL_INTERVAL_MS` defaults to `60000`.
 `DEVIN_ORCHESTRATOR_INTERVAL_MS` remains `3000` by default.
 `DEVIN_ANALYSIS_MAX_ATTEMPTS` defaults to `12` and is forwarded by the
-entrypoint. Set these in the application environment; custom Compose deployments
-must also forward overrides. See
-[passive session tracking](docs/passive-devin-lifecycle.md) for state policies,
-capacity, fencing, migration, and operational limits.
+entrypoint and the checked-in Compose file. Set these in your shell or `.env`
+and recreate the app container to apply overrides. An absent or empty retained
+poll interval uses `60000` milliseconds; nonempty values must be positive
+integers or AppConfig fails. See
+[Compose configuration checks](docs/lifecycle-compose.md) for isolated rendering
+tests, and [passive session tracking](docs/passive-devin-lifecycle.md) for state
+policies, capacity, fencing, migration, and operational limits.
 
 ## Observability
 
