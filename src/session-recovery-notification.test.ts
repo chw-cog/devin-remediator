@@ -9,8 +9,15 @@ import { GitHubClient } from "./github.ts";
 import { attentionNotifications } from "./schemas.ts";
 import { seedRecovery } from "../test/fixtures/session-recovery.ts";
 import { githubAppEnv } from "../test/fixtures/github-app.ts";
-for (const receipt of [false, true]) {
-  Deno.test(`session recovery: local resolution reconciles historical send without repost (receipt ${receipt})`, async () => {
+for (
+  const [reason, receipt] of [
+    ["needs_input", false],
+    ["needs_input", true],
+    ["session_started", false],
+    ["session_started", true],
+  ] as const
+) {
+  Deno.test(`session recovery: local resolution reconciles ${reason} send without repost (receipt ${receipt})`, async () => {
     const directory = await Deno.makeTempDir();
     const requests: string[] = [];
     const body = "synthetic body <!-- devin-attention:notice -->";
@@ -31,8 +38,8 @@ for (const receipt of [false, true]) {
           yield* db.insert(attentionNotifications).values({
             id: "notice",
             sessionRecordId: "one",
-            sequence: 2,
-            reason: "needs_input",
+            sequence: reason === "session_started" ? 0 : 2,
+            reason,
             repo: "owner/repo",
             issueNumber: 123,
             remoteId: "remote-one",

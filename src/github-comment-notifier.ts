@@ -64,6 +64,11 @@ const render = (row: Notification): string | null => {
   if (!Schema.is(RemoteId)(row.remoteId)) return null;
   const url = `https://app.devin.ai/sessions/${row.remoteId}`;
   if (row.sessionUrl !== url) return null;
+  if (row.reason === "session_started") {
+    return `Devin has picked up this issue. [Follow the session](${url}).\n\n${
+      marker(row)
+    }`;
+  }
   const direction = row.reason === "needs_input"
     ? "awaiting input. Review its current state and respond"
     : "awaiting approval. Review its current state and approve or decline";

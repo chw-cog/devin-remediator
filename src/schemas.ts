@@ -129,7 +129,9 @@ export const attentionNotifications = sqliteTable("attention_notifications", {
     devinSessions.id
   ),
   sequence: integer("sequence").notNull(),
-  reason: text("reason", { enum: ["needs_input", "needs_approval"] }).notNull(),
+  reason: text("reason", {
+    enum: ["session_started", "needs_input", "needs_approval"],
+  }).notNull(),
   repo: text("repo").notNull(),
   issueNumber: integer("issue_number"),
   remoteId: text("remote_id"),
@@ -172,7 +174,7 @@ export const attentionNotifications = sqliteTable("attention_notifications", {
   index("attention_due_idx").on(table.status, table.dueAt),
   check(
     "attention_reason_check",
-    sql`${table.reason} IN ('needs_input', 'needs_approval')`,
+    sql`(${table.reason} = 'session_started' AND ${table.sequence} = 0) OR (${table.reason} IN ('needs_input', 'needs_approval') AND ${table.sequence} > 0)`,
   ),
   check(
     "attention_status_check",
@@ -188,7 +190,7 @@ export const attentionNotifications = sqliteTable("attention_notifications", {
   ),
   check(
     "attention_counters_check",
-    sql`${table.sequence} > 0 AND ${table.version} >= 0 AND ${table.attempts} >= 0 AND ${table.scanPage} > 0 AND ${table.scanMatches} >= 0 AND ${table.negativeScans} BETWEEN 0 AND 2`,
+    sql`${table.sequence} >= 0 AND ${table.version} >= 0 AND ${table.attempts} >= 0 AND ${table.scanPage} > 0 AND ${table.scanMatches} >= 0 AND ${table.negativeScans} BETWEEN 0 AND 2`,
   ),
 ]);
 

@@ -14,6 +14,7 @@ import {
 import { TestClock } from "effect/testing";
 import { FetchHttpClient } from "effect/unstable/http";
 import { githubAppEnv } from "../test/fixtures/github-app.ts";
+import { playbook } from "../test/fixtures/playbook.ts";
 import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import { GitHubAuthenticationError, GitHubClient } from "./github.ts";
 import { type AppDatabase, DatabaseClient } from "./database.ts";
@@ -398,7 +399,7 @@ notificationTest(
       });
       const [submission] = yield* repository.claimPending;
       yield* db
-        .$client`CREATE TRIGGER reject_attention BEFORE INSERT ON attention_notifications BEGIN SELECT RAISE(ABORT, 'synthetic rollback'); END`;
+        .$client`CREATE TRIGGER reject_attention BEFORE INSERT ON attention_notifications WHEN NEW.reason = 'needs_input' BEGIN SELECT RAISE(ABORT, 'synthetic rollback'); END`;
       assert.equal(
         (yield* repository.markSubmitted(
           submission.session,
@@ -455,9 +456,270 @@ notificationTest(
       );
       yield* db.$client`DROP TRIGGER reject_attention`;
       assert.equal(yield* repository.recordObservation(fresh, approval), true);
-      assert.equal((yield* db.select().from(notifications)).length, 2);
+      assert.deepEqual(
+        (yield* db.select().from(notifications).orderBy(notifications.sequence))
+          .map((r) => [r.sequence, r.reason, r.status, r.closedAt !== null]),
+        [
+          [0, "session_started", "pending", false],
+          [1, "needs_input", "cancelled", true],
+          [2, "needs_approval", "pending", false],
+        ],
+      );
     }),
 );
+
+for (const recovered of [false, true]) {
+  for (const githubFails of [false, true]) {
+    notificationTest(
+      `startup follows ${
+        recovered ? "recovered" : "successful"
+      } dispatch once without redispatch (GitHub failure ${githubFails})`,
+      ({ db, repository, notifier, http }) =>
+        Effect.gen(function* () {
+          yield* seed(db);
+          yield* db.update(githubWebhookDeliveries).set({
+            payload:
+              '{"action":"labeled","label":{"name":"devin"},"issue":{"number":42,"title":"Fix this"}}',
+          });
+          yield* db.update(devinSessions).set({
+            status: recovered ? "submitting" : "pending",
+            attempts: recovered ? 1 : 0,
+            devinSessionId: null,
+            updatedAt: "1969-01-01T00:00:00.000Z",
+          });
+          const calls: string[] = [];
+          const running = {
+            ...remote,
+            url: "https://untrusted.example/session",
+            status_detail: "working",
+            structured_output: null,
+          };
+          const unexpected = () => Effect.die("Unexpected Devin call");
+          const client = DevinClient.of({
+            diagnoseSession: unexpected,
+            createPlaybook: unexpected,
+            findPlaybookByMacro: () => Effect.succeed(playbook),
+            createSession: () =>
+              Effect.sync(() => {
+                calls.push("create");
+                return running;
+              }),
+            findSessionsByTag: () =>
+              Effect.sync(() => {
+                calls.push("recover");
+                return [running];
+              }),
+            listSessions: () => Effect.succeed([running]),
+            listSessionsWithInsights: unexpected,
+            generateSessionInsights: unexpected,
+          });
+          const normal = http.behavior.respond;
+          yield* DevinSessionOrchestrator.use((orchestra) =>
+            Effect.gen(function* () {
+              yield* orchestra.tick;
+              const started = yield* row(db);
+              assert.equal(started.reason, "session_started");
+              assert.equal(started.sequence, 0);
+              assert.equal(started.remoteId, "session-one");
+              assert.equal(
+                started.sessionUrl,
+                "https://app.devin.ai/sessions/session-one",
+              );
+              assert.equal(started.closedAt, null);
+              assert.equal(http.requests.length, 0);
+              if (githubFails) {
+                http.behavior.respond = () =>
+                  Response.json({}, {
+                    status: 429,
+                    headers: { "retry-after": "120" },
+                  });
+                yield* orchestra.tick;
+                assert.equal((yield* row(db)).attempts, 1);
+                yield* TestClock.adjust("119 seconds");
+                yield* orchestra.tick;
+                assert.equal(http.requests.length, 1);
+                yield* due(db);
+                http.behavior.respond = normal;
+              }
+              yield* orchestra.tick;
+              yield* due(db);
+              if (githubFails) {
+                http.behavior.respond = () =>
+                  Response.json({}, { status: 503 });
+              }
+              yield* orchestra.tick;
+              const expected =
+                `Devin has picked up this issue. [Follow the session](https://app.devin.ai/sessions/session-one).\n\n<!-- devin-attention:${started.id} -->`;
+              assert.deepEqual(http.posts().map((request) => request.json), [{
+                body: expected,
+              }]);
+              assert.equal(
+                http.posts()[0].url.href,
+                "https://api.github.com/repos/owner/repo/issues/42/comments",
+              );
+              if (githubFails) {
+                assert.equal((yield* row(db)).status, "pending");
+                assert.ok((yield* row(db)).possibleSendAt !== null);
+                yield* due(db);
+                http.behavior.respond = () =>
+                  Response.json([{
+                    id: 901,
+                    body: expected,
+                    performed_via_github_app: { id: 101 },
+                  }]);
+                yield* orchestra.tick;
+                assert.equal(http.requests.at(-1)?.kind, "lookup");
+              }
+              assert.equal((yield* row(db)).status, "delivered");
+              for (let i = 0; i < 3; i++) {
+                yield* TestClock.adjust("1 minute");
+                yield* orchestra.tick;
+              }
+              assert.equal(http.posts().length, 1);
+              assert.equal((yield* db.select().from(notifications)).length, 1);
+              const [session] = yield* db.select().from(devinSessions);
+              assert.equal(session.status, "submitted");
+              assert.equal(session.devinSessionId, "session-one");
+              assert.deepEqual(calls, [recovered ? "recover" : "create"]);
+            })
+          ).pipe(
+            Effect.provide(DevinSessionOrchestrator.layer),
+            Effect.provideService(GitHubCommentNotifier, notifier),
+            Effect.provideService(DatabaseClient, { db }),
+            Effect.provideService(DevinSessionRepository, repository),
+            Effect.provideService(DevinClient, client),
+            Effect.provide(WebhookEventProcessors.layer),
+            Effect.provide(config()),
+          );
+        }),
+    );
+  }
+}
+
+notificationTest(
+  "startup enqueue rolls back submission, fences replaced claims and survives submission retries once",
+  ({ db, repository }) =>
+    Effect.gen(function* () {
+      yield* seed(db);
+      yield* db.update(devinSessions).set({
+        status: "pending",
+        devinSessionId: null,
+      });
+      const [old] = yield* repository.claimPending;
+      yield* repository.rejectSubmission(old.session, true);
+      assert.deepEqual(yield* db.select().from(notifications), []);
+      const [current] = yield* repository.claimPending;
+      assert.equal(
+        yield* repository.markSubmitted(old.session, "stale"),
+        false,
+      );
+      assert.deepEqual(yield* db.select().from(notifications), []);
+      yield* db
+        .$client`CREATE TRIGGER reject_startup BEFORE INSERT ON attention_notifications WHEN NEW.reason = 'session_started' BEGIN SELECT RAISE(ABORT, 'synthetic rollback'); END`;
+      const [before] = yield* db.select().from(devinSessions);
+      assert.equal(
+        (yield* repository.markSubmitted(current.session, remote.session_id)
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual((yield* db.select().from(devinSessions))[0], before);
+      assert.deepEqual(yield* db.select().from(notifications), []);
+      yield* db.$client`DROP TRIGGER reject_startup`;
+      assert.equal(
+        yield* repository.markSubmitted(current.session, remote.session_id),
+        true,
+      );
+      const started = yield* row(db);
+      assert.equal(started.reason, "session_started");
+      assert.equal(started.sequence, 0);
+      assert.equal(
+        yield* repository.markSubmitted(current.session, "replacement"),
+        false,
+      );
+      assert.deepEqual(
+        yield* repository.rejectSubmission(current.session, true),
+        [],
+      );
+      assert.deepEqual(yield* db.select().from(notifications), [started]);
+      assert.deepEqual(yield* repository.claimPending, []);
+    }),
+);
+
+for (
+  const delivery of ["pending", "blocked", "in_flight", "delivered"] as const
+) {
+  notificationTest(
+    `attention transitions and link repair leave ${delivery} startup snapshots untouched`,
+    ({ db, repository }) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        yield* db.update(devinSessions).set({
+          status: "pending",
+          devinSessionId: null,
+        });
+        const [claim] = yield* repository.claimPending;
+        assert.equal(
+          yield* repository.markSubmitted(claim.session, remote.session_id),
+          true,
+        );
+        if (delivery !== "pending") {
+          yield* db.update(notifications).set(
+            delivery === "blocked"
+              ? {
+                status: "blocked",
+                lastFailure: "unsafe_link",
+                body: "frozen blocked body",
+              }
+              : {
+                status: delivery === "delivered" ? "delivered" : "pending",
+                body: "frozen sent body",
+                possibleSendAt: 1,
+                expectedAppId: 101,
+                expectedInstallationId: 202,
+                commentId: delivery === "delivered" ? 900 : null,
+              },
+          );
+        }
+        const started = yield* row(db);
+        for (
+          const state of [
+            remote,
+            {
+              ...remote,
+              url: "https://invalid.example/changed",
+              updated_at: 2,
+            },
+            { ...remote, updated_at: 3 },
+            { ...remote, status_detail: "waiting_for_approval", updated_at: 4 },
+            { ...remote, status_detail: "working", updated_at: 5 },
+            {
+              ...remote,
+              status: "exit",
+              status_detail: "finished",
+              updated_at: 6,
+            },
+            { ...remote, updated_at: 7 },
+            { ...remote, is_archived: true, updated_at: 8 },
+          ] satisfies ReadonlyArray<DevinSession>
+        ) {
+          yield* observe(db, repository, state);
+          assert.deepEqual(yield* row(db), started);
+        }
+        assert.deepEqual(
+          (yield* db.select().from(notifications).orderBy(
+            notifications.sequence,
+          ))
+            .map((r) => [r.sequence, r.reason, r.status]),
+          [
+            [0, "session_started", started.status],
+            [1, "needs_input", "cancelled"],
+            [2, "needs_approval", "cancelled"],
+            [3, "needs_input", "cancelled"],
+          ],
+        );
+      }),
+  );
+}
 
 notificationTest(
   "disabled delivery retains unclaimed work and reports without per-poll noise",

@@ -391,6 +391,10 @@ export class DevinSessionRepository extends Context.Service<
             lastFailure: null,
           }).where(and(
             eq(attentionNotifications.sessionRecordId, after.id),
+            inArray(attentionNotifications.reason, [
+              "needs_input",
+              "needs_approval",
+            ]),
             isNull(attentionNotifications.closedAt),
             isNull(attentionNotifications.possibleSendAt),
             inArray(attentionNotifications.status, ["pending", "blocked"]),
@@ -403,6 +407,10 @@ export class DevinSessionRepository extends Context.Service<
             sql`CASE WHEN ${attentionNotifications.possibleSendAt} IS NULL AND ${attentionNotifications.status} IN ('pending', 'blocked') THEN 'cancelled' ELSE ${attentionNotifications.status} END`,
         }).where(and(
           eq(attentionNotifications.sessionRecordId, after.id),
+          inArray(attentionNotifications.reason, [
+            "needs_input",
+            "needs_approval",
+          ]),
           isNull(attentionNotifications.closedAt),
         ));
         const reason = after.providerLifecycle;
@@ -544,19 +552,26 @@ export class DevinSessionRepository extends Context.Service<
                 updatedAt: DateTime.formatIso(now),
               }).where(ownsClaim(claim)).returning();
               if (!saved) return false;
+              const [delivery] = yield* tx.select().from(
+                githubWebhookDeliveries,
+              ).where(eq(
+                githubWebhookDeliveries.deliveryId,
+                saved.githubDeliveryId,
+              ));
+              yield* tx.insert(attentionNotifications).values({
+                id: crypto.randomUUID(),
+                sessionRecordId: saved.id,
+                sequence: 0,
+                reason: "session_started",
+                repo: delivery.repo,
+                issueNumber: delivery.issueNumber,
+                remoteId: devinSessionId,
+                sessionUrl: `https://app.devin.ai/sessions/${devinSessionId}`,
+              });
               if (
                 observation !== undefined &&
                 observation.session_id === devinSessionId
               ) {
-                const [delivery] = yield* tx.select().from(
-                  githubWebhookDeliveries,
-                )
-                  .where(
-                    eq(
-                      githubWebhookDeliveries.deliveryId,
-                      saved.githubDeliveryId,
-                    ),
-                  );
                 const [observed] = yield* tx.update(devinSessions)
                   .set(
                     observationUpdate(saved, observation, delivery.repo, now),

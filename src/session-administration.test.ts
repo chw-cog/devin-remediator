@@ -332,7 +332,7 @@ recoveryTest(
 );
 
 recoveryTest(
-  "operator resolution closes unsent and possible-send attention episodes even with notifications disabled",
+  "operator resolution closes unsent startup and attention notifications and preserves possible sends even with notifications disabled",
   Effect.gen(function* () {
     const { db } = yield* DatabaseClient;
     const repository = yield* DevinSessionRepository;
@@ -342,6 +342,16 @@ recoveryTest(
     yield* repository.recordObservation(claim, {
       ...recoveryRemote(),
       status_detail: "waiting_for_user",
+    });
+    yield* db.insert(attentionNotifications).values({
+      id: "startup",
+      sessionRecordId: "one",
+      sequence: 0,
+      reason: "session_started",
+      repo: "owner/repo",
+      issueNumber: 123,
+      remoteId: "remote-one",
+      sessionUrl: recoveryRemote().url,
     });
     yield* db.insert(attentionNotifications).values({
       id: "possible",
@@ -376,10 +386,14 @@ recoveryTest(
     });
     const events = yield* db.select().from(attentionNotifications);
     assert.ok(events.every((event) => event.closedAt !== null));
-    assert.equal(
-      events.find((event) => event.id !== "possible")?.status,
-      "cancelled",
+    assert.equal(events.length, 3);
+    assert.deepEqual(
+      events.filter((event) => event.id !== "possible").map((event) =>
+        event.status
+      ),
+      ["cancelled", "cancelled"],
     );
+    assert.equal(events.find((event) => event.id === "startup")?.version, 1);
     const possible = events.find((event) => event.id === "possible")!;
     assert.equal(possible.status, "pending");
     assert.equal(possible.body, "PRIVATE immutable body");
