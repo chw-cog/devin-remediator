@@ -37,6 +37,7 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
   ).pipe(
     Layer.provideMerge(DatabaseClient.layer),
     Layer.provide(Layer.succeed(DevinClient, {
+      diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
       createPlaybook: () => Effect.die("Playbook already exists"),
       findPlaybookByMacro: () => Effect.succeed(playbook),
       createSession: () =>
@@ -135,6 +136,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
   const creates: Parameters<DevinClient["Service"]["createSession"]>[0][] = [];
   const gets: string[] = [];
   const client = DevinClient.of({
+    diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
     createPlaybook: () => Effect.die("Playbook already exists"),
     findPlaybookByMacro: () => Effect.succeed(playbook),
     createSession: (request) =>

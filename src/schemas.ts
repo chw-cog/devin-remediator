@@ -40,6 +40,21 @@ export const devinSessions = sqliteTable("devin_sessions", {
       "skipped",
     ],
   }).notNull(),
+  localOwnership: text("local_ownership", { enum: ["tracking", "released"] })
+    .notNull().default("tracking"),
+  lookupFailureStreak: integer("lookup_failure_streak").notNull().default(0),
+  lookupFailureCount: integer("lookup_failure_count").notNull().default(0),
+  firstLookupFailureAt: text("first_lookup_failure_at"),
+  lastLookupFailureAt: text("last_lookup_failure_at"),
+  lastLookupFailure: text("last_lookup_failure", {
+    enum: ["missing", "unavailable", "duplicates"],
+  }),
+  reconciliationEscalatedAt: text("reconciliation_escalated_at"),
+  nextRecoveryAt: text("next_recovery_at").notNull()
+    .default("1970-01-01T00:00:00.000Z"),
+  adminVersion: integer("admin_version").notNull().default(0),
+  recoveryCandidateIds: text("recovery_candidate_ids", { mode: "json" })
+    .$type<ReadonlyArray<string>>().notNull().default([]),
   providerStatus: text("provider_status"),
   providerStatusDetail: text("provider_status_detail"),
   providerLifecycle: text("provider_lifecycle").$type<ProviderLifecycle>(),
@@ -184,3 +199,29 @@ export const githubNotificationGate = sqliteTable("github_notification_gate", {
   nextRequestAt: integer("next_request_at").notNull().default(0),
   nextReportAt: integer("next_report_at").notNull().default(0),
 }, (table) => [check("github_notification_singleton", sql`${table.id} = 1`)]);
+
+export const sessionAdminEvents = sqliteTable(
+  "session_admin_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    sessionRecordId: text("session_record_id").notNull().references(() =>
+      devinSessions.id
+    ),
+    action: text("action", {
+      enum: ["diagnose", "associate", "resolve", "resume", "migration"],
+    }).notNull(),
+    reason: text("reason"),
+    remoteId: text("remote_id"),
+    outcome: text("outcome").notNull(),
+    httpStatus: integer("http_status"),
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (
+    table,
+  ) => [
+    index("session_admin_events_session_idx").on(
+      table.sessionRecordId,
+      table.id,
+    ),
+  ],
+);

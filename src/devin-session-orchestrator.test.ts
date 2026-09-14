@@ -104,6 +104,7 @@ function fakeClient() {
       Effect.succeed({ session_id: id, status: "started" }),
   };
   const client = DevinClient.of({
+    diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
     createPlaybook: () => behavior.createPlaybook(),
     findPlaybookByMacro: () => behavior.findPlaybook(),
     createSession: (params) =>
@@ -833,6 +834,7 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
       assert.equal((yield* row(db, "http")).status, "submitting");
       yield* db.update(devinSessions).set({
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       yield* orchestra.tick;
       const saved = yield* row(db, "http");
@@ -1055,6 +1057,9 @@ orchestrationTest(
       assert.equal((yield* row(db, "pending")).status, "submitted");
       assert.equal(fake.creates.length, 1);
       failBatch = false;
+      yield* db.update(devinSessions).set({
+        nextObservationAt: "1970-01-01T00:00:00.000Z",
+      });
       yield* orchestra.tick;
       for (const id of ids) {
         const saved = yield* row(db, id);
@@ -1156,10 +1161,19 @@ Deno.test("polling reconciles paginated list responses through the real client w
       assert.equal(observedRunning.providerLifecycle, "active");
       assert.deepEqual(observedRunning.outputs, running.outputs);
       assert.equal(observedRunning.devinSessionId, running.devinSessionId);
-      assert.deepEqual(yield* row(db, "missing"), {
+      const missingAfter = yield* row(db, "missing");
+      assert.deepEqual(missingAfter, {
         ...missing,
         observationVersion: missing.observationVersion + 1,
+        lookupFailureStreak: 1,
+        lookupFailureCount: 1,
+        firstLookupFailureAt: missingAfter.updatedAt,
+        lastLookupFailureAt: missingAfter.updatedAt,
+        lastLookupFailure: "missing",
+        nextObservationAt: missingAfter.nextObservationAt,
+        updatedAt: missingAfter.updatedAt,
       });
+      assert.ok(missingAfter.nextObservationAt > missingAfter.updatedAt);
     }).pipe(
       Effect.provide(layer),
       Effect.provideService(FetchHttpClient.Fetch, fetch),
@@ -1300,10 +1314,19 @@ orchestrationTest(
           },
         }]);
       yield* orchestra.tick;
-      assert.deepEqual(yield* row(db, "one"), {
+      const missingAfter = yield* row(db, "one");
+      assert.deepEqual(missingAfter, {
         ...before,
         observationVersion: before.observationVersion + 1,
+        lookupFailureStreak: 1,
+        lookupFailureCount: 1,
+        firstLookupFailureAt: missingAfter.updatedAt,
+        lastLookupFailureAt: missingAfter.updatedAt,
+        lastLookupFailure: "missing",
+        nextObservationAt: missingAfter.nextObservationAt,
+        updatedAt: missingAfter.updatedAt,
       });
+      assert.ok(missingAfter.nextObservationAt > missingAfter.updatedAt);
       assert.equal((yield* row(db, "two")).status, "submitted");
       assert.equal((yield* row(db, "three")).status, "submitted");
       assert.equal(fake.creates.length, 1);
@@ -1385,18 +1408,20 @@ orchestrationTest(
 );
 
 orchestrationTest(
-  "stale submissions need two empty lookups before retry or exhaustion; fresh claims stay active",
+  "stale submissions retain uncertainty after empty lookups regardless of attempts; fresh claims stay active",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
       yield* seed(db, "stale", {
         status: "submitting",
         attempts: 1,
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       yield* seed(db, "exhausted", {
         status: "submitting",
         attempts: 3,
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       yield* seed(db, "fresh", { status: "submitting", attempts: 1 });
       yield* orchestra.tick;
@@ -1409,20 +1434,17 @@ orchestrationTest(
       for (const id of ["stale", "exhausted"]) {
         yield* db.update(devinSessions).set({
           updatedAt: "2000-01-01T00:00:00.000Z",
+          nextRecoveryAt: "1970-01-01T00:00:00.000Z",
         }).where(eq(devinSessions.id, id));
       }
       yield* orchestra.tick;
-      assert.equal((yield* row(db, "stale")).status, "submitted");
-      assert.equal((yield* row(db, "stale")).attempts, 2);
-      assert.equal((yield* row(db, "exhausted")).status, "failed");
-      assert.deepEqual((yield* row(db, "exhausted")).outputs, [{
-        outcome: "failed",
-        summary:
-          "Submission attempts exhausted after repeated empty recovery lookups.",
-      }]);
+      assert.equal((yield* row(db, "stale")).status, "submitting");
+      assert.equal((yield* row(db, "stale")).attempts, 1);
+      assert.equal((yield* row(db, "exhausted")).status, "submitting");
+      assert.deepEqual((yield* row(db, "exhausted")).outputs, []);
       assert.equal((yield* row(db, "exhausted")).attempts, 3);
       assert.equal((yield* row(db, "fresh")).status, "submitting");
-      assert.equal(fake.creates.length, 1);
+      assert.equal(fake.creates.length, 0);
     }),
 );
 
@@ -1434,6 +1456,7 @@ orchestrationTest(
       const [old] = yield* repository.claimPending;
       yield* db.update(devinSessions).set({
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       const [current] = yield* repository.claimStale;
       assert.equal(current.session.attempts, 1);
@@ -1471,6 +1494,7 @@ for (
           status: "submitting",
           attempts: 3,
           updatedAt: "2000-01-01T00:00:00.000Z",
+          nextRecoveryAt: "1970-01-01T00:00:00.000Z",
         });
         fake.behavior.lookup = () =>
           Effect.succeed([{
@@ -1575,6 +1599,7 @@ orchestrationTest(
         status: "submitting",
         attempts: 1,
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       fake.behavior.lookup = () =>
         Effect.succeed([
@@ -1590,6 +1615,7 @@ orchestrationTest(
       fake.behavior.lookup = () => Effect.succeed([]);
       yield* db.update(devinSessions).set({
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       yield* orchestra.tick;
       const saved = yield* row(db, "duplicate");
@@ -1610,6 +1636,7 @@ orchestrationTest(
         attempts: 3,
         recoveryEmptyChecks: 1,
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       fake.behavior.lookup = () =>
         Effect.fail(new DevinLookupError({ cause: "403" }));
@@ -1620,6 +1647,7 @@ orchestrationTest(
       fake.behavior.lookup = () => Effect.succeed([]);
       yield* db.update(devinSessions).set({
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       yield* orchestra.tick;
       saved = yield* row(db, "unavailable");
@@ -1638,11 +1666,13 @@ orchestrationTest(
         status: "submitting",
         attempts: 1,
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       yield* orchestra.tick;
       fake.behavior.lookup = () => Effect.succeed([remote]);
       yield* db.update(devinSessions).set({
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       yield* orchestra.tick;
       assert.equal((yield* row(db, "delayed")).devinSessionId, "devin-created");
@@ -1660,11 +1690,13 @@ orchestrationTest(
         attempts: 1,
         recoveryEmptyChecks: 1,
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       const [old] = yield* repository.claimStale;
       assert.deepEqual(yield* repository.claimStale, []);
       yield* db.update(devinSessions).set({
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       const [current] = yield* repository.claimStale;
       for (const outcome of ["empty", "unavailable", "duplicates"] as const) {
@@ -1684,7 +1716,7 @@ orchestrationTest(
 );
 
 orchestrationTest(
-  "best-effort retries preserve tags and wait a full grace interval between empty lookups",
+  "ambiguous submission retains its original tag and never retries POST after empty lookups",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
       yield* seed(db, "one");
@@ -1702,13 +1734,16 @@ orchestrationTest(
       yield* TestClock.adjust("2 seconds");
       yield* orchestra.tick;
       assert.equal(fake.lookups.length, 2);
-      assert.equal(fake.creates.length, 2);
+      assert.equal(fake.creates.length, 1);
       assert.deepEqual(fake.creates.map((request) => request.tags), [
         ["delivery-id:delivery-one", "github:owner/repo", "issue:123"],
-        ["delivery-id:delivery-one", "github:owner/repo", "issue:123"],
       ]);
-      assert.equal((yield* row(db, "one")).status, "submitted");
-      assert.equal((yield* row(db, "one")).attempts, 2);
+      yield* TestClock.adjust("61 seconds");
+      yield* orchestra.tick;
+      assert.equal((yield* row(db, "one")).status, "submitting");
+      assert.equal((yield* row(db, "one")).attempts, 1);
+      assert.equal((yield* row(db, "one")).recoveryBlocked, true);
+      assert.equal(fake.creates.length, 1);
     }).pipe(Effect.provide(TestClock.layer())),
 );
 
@@ -1845,6 +1880,7 @@ Deno.test("independent workers sharing SQLite cannot reclaim a delivery while it
           attempts: 1,
           recoveryEmptyChecks: 1,
           updatedAt: "2000-01-01T00:00:00.000Z",
+          nextRecoveryAt: "1970-01-01T00:00:00.000Z",
         });
         const entered = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
@@ -1864,11 +1900,11 @@ Deno.test("independent workers sharing SQLite cannot reclaim a delivery while it
         yield* Fiber.join(fiber);
         yield* second.tick;
         const saved = yield* row(db, "shared");
-        assert.equal(saved.status, "submitted");
-        assert.equal(saved.attempts, 2);
-        assert.equal(saved.devinSessionId, "devin-created-1");
+        assert.equal(saved.status, "submitting");
+        assert.equal(saved.attempts, 1);
+        assert.equal(saved.devinSessionId, null);
         assert.deepEqual(fake.lookups, ["delivery-id:delivery-shared"]);
-        assert.equal(fake.creates.length, 1);
+        assert.equal(fake.creates.length, 0);
       }).pipe(Effect.scoped),
     );
   } finally {
@@ -1893,6 +1929,7 @@ Deno.test("restart recovers a lost creation response by tag without another POST
         yield* orchestra.tick;
         yield* db.update(devinSessions).set({
           updatedAt: "2000-01-01T00:00:00.000Z",
+          nextRecoveryAt: "1970-01-01T00:00:00.000Z",
         });
       }).pipe(Effect.provide(layer)),
     );
@@ -1999,6 +2036,7 @@ for (
         assert.equal(skipped.prNumber, null);
         yield* db.update(devinSessions).set({
           updatedAt: "2000-01-01T00:00:00.000Z",
+          nextRecoveryAt: "1970-01-01T00:00:00.000Z",
         });
         const before = yield* row(db, "skip");
         assert.deepEqual(yield* repository.claimStale, []);
@@ -2036,6 +2074,7 @@ orchestrationTest(
       const [old] = yield* repository.claimPending;
       yield* db.update(devinSessions).set({
         updatedAt: "2000-01-01T00:00:00.000Z",
+        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
       });
       const [current] = yield* repository.claimStale;
       assert.equal(current.session.attempts, 1);

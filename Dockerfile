@@ -8,7 +8,7 @@ RUN deno install --frozen
 COPY --chown=deno:deno src ./src
 COPY --chown=deno:deno playbooks ./playbooks
 COPY --chown=deno:deno migrations ./migrations
-RUN deno check src/index.ts
+RUN deno check src/index.ts src/session-admin.ts
 
 EXPOSE 8000
 ENTRYPOINT ["deno"]

@@ -48,6 +48,7 @@ const delivery: DeliveryRecord = {
 Deno.test("issues processor creates a session for the exact added devin label and passes persisted delivery context", async () => {
   const requests: Parameters<DevinClient["Service"]["createSession"]>[0][] = [];
   const client = DevinClient.of({
+    diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
     createPlaybook: () =>
       Effect.die("Existing playbook must not be overwritten"),
     findPlaybookByMacro: (macro) => {
@@ -112,6 +113,7 @@ for (
 ) {
   Deno.test(`issues processor skips ${name} without calling Devin`, async () => {
     const client = DevinClient.of({
+      diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
       createPlaybook: () =>
         Effect.die("Skipped delivery must not create playbooks"),
       findPlaybookByMacro: () =>
@@ -137,6 +139,7 @@ for (const disposition of ["retryable", "permanent", "ambiguous"] as const) {
   Deno.test(`issues processor preserves ${disposition} Devin submission errors`, async () => {
     const error = new DevinSubmissionError({ disposition, httpStatus: 503 });
     const client = DevinClient.of({
+      diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
       createPlaybook: () => Effect.die("Playbook already exists"),
       findPlaybookByMacro: () => Effect.succeed(playbook),
       createSession: () => Effect.fail(error),
@@ -157,6 +160,7 @@ for (const disposition of ["retryable", "permanent", "ambiguous"] as const) {
 }
 
 const unusedClient = DevinClient.of({
+  diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
   createPlaybook: () => Effect.die("Unexpected playbook creation"),
   findPlaybookByMacro: () => Effect.die("Unexpected playbook lookup"),
   createSession: () => Effect.die("Unexpected session creation"),

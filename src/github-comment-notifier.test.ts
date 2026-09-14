@@ -981,6 +981,7 @@ notificationTest(
       const calls: string[] = [];
       const unexpected = () => Effect.die("Unexpected control/submission");
       const client = DevinClient.of({
+        diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
         createPlaybook: unexpected,
         findPlaybookByMacro: unexpected,
         createSession: unexpected,

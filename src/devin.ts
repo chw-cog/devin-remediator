@@ -314,6 +314,23 @@ export class DevinLookupError extends Schema.TaggedError<DevinLookupError>()(
   { cause: Schema.Defect() },
 ) {}
 
+export type SessionDiagnostic =
+  | {
+    readonly outcome: "found";
+    readonly session: DevinSession;
+    readonly httpStatus: number;
+  }
+  | {
+    readonly outcome:
+      | "not_found"
+      | "authentication"
+      | "authorization"
+      | "rate_limit"
+      | "temporary"
+      | "invalid_response";
+    readonly httpStatus?: number;
+  };
+
 const decodeTag = Schema.decodeUnknownEffect(Schema.NonEmptyString);
 
 export const sessionBatchSize = 200;
@@ -328,6 +345,11 @@ const encodePlaybookBody = HttpClientRequest.schemaBodyJson(
   CreatePlaybookParams,
 );
 
+class DevinCredentials extends Context.Service<
+  DevinCredentials,
+  Pick<AppConfig, "devinApiKey" | "devinOrganizationId">
+>()("devin-remediator/DevinCredentials") {}
+
 export class DevinClient extends Context.Service<DevinClient, {
   readonly createPlaybook: (params: CreatePlaybookParams) => Effect.Effect<
     DevinPlaybook,
@@ -341,6 +363,9 @@ export class DevinClient extends Context.Service<DevinClient, {
     DevinSession,
     DevinSubmissionError
   >;
+  readonly diagnoseSession: (
+    sessionId: string,
+  ) => Effect.Effect<SessionDiagnostic>;
   readonly listSessions: (session_ids: ReadonlyArray<string>) => Effect.Effect<
     ReadonlyArray<DevinSession>,
     | HttpClientError.HttpClientError
@@ -359,10 +384,10 @@ export class DevinClient extends Context.Service<DevinClient, {
     sessionId: string,
   ) => Effect.Effect<typeof InsightsGeneration.Type, DevinLookupError>;
 }>()("devin-remediator/DevinClient") {
-  static readonly layer = Layer.effect(
+  private static readonly clientLayer = Layer.effect(
     DevinClient,
     Effect.gen(function* () {
-      const config = yield* AppConfig;
+      const config = yield* DevinCredentials;
       const baseUrl = `https://api.devin.ai/v3/organizations/${
         encodeURIComponent(config.devinOrganizationId)
       }`;
@@ -458,6 +483,52 @@ export class DevinClient extends Context.Service<DevinClient, {
           effect.pipe(
             Effect.annotateLogs({ playbook_id: params.playbook_id }),
           ),
+      );
+
+      const diagnoseSession = Effect.fn("DevinClient.diagnoseSession")(
+        function* (sessionId: string): Effect.fn.Return<SessionDiagnostic> {
+          const result = yield* decodeTag(sessionId).pipe(
+            Effect.flatMap(() =>
+              client.get(`/sessions/${encodeURIComponent(sessionId)}`)
+            ),
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
+            Effect.timeout("10 seconds"),
+            Effect.result,
+          );
+          if (result._tag === "Success") {
+            return result.success.session_id === sessionId &&
+                result.success.org_id === config.devinOrganizationId
+              ? { outcome: "found", session: result.success, httpStatus: 200 }
+              : { outcome: "invalid_response", httpStatus: 200 };
+          }
+          const error = result.failure;
+          if (
+            error._tag === "HttpClientError" &&
+            error.reason._tag === "StatusCodeError"
+          ) {
+            const httpStatus = error.reason.response.status;
+            return {
+              httpStatus,
+              outcome: httpStatus === 404
+                ? "not_found"
+                : httpStatus === 401
+                ? "authentication"
+                : httpStatus === 403
+                ? "authorization"
+                : httpStatus === 429
+                ? "rate_limit"
+                : httpStatus === 408 || httpStatus >= 500
+                ? "temporary"
+                : "invalid_response",
+            };
+          }
+          return {
+            outcome: error._tag === "SchemaError"
+              ? "invalid_response"
+              : "temporary",
+          };
+        },
+        observeClient("diagnoseSession"),
       );
 
       const listSessions = Effect.fn("DevinClient.listSessions")(
@@ -641,10 +712,23 @@ export class DevinClient extends Context.Service<DevinClient, {
         findPlaybookByMacro,
         createSession,
         listSessions,
+        diagnoseSession,
         findSessionsByTag,
         listSessionsWithInsights,
         generateSessionInsights,
       });
     }),
   ).pipe(Layer.provide(FetchHttpClient.layer));
+
+  static layerWithCredentials(
+    config: Pick<AppConfig, "devinApiKey" | "devinOrganizationId">,
+  ) {
+    return DevinClient.clientLayer.pipe(
+      Layer.provide(Layer.succeed(DevinCredentials, config)),
+    );
+  }
+
+  static readonly layer = Layer.unwrap(AppConfig.pipe(
+    Effect.map((config) => DevinClient.layerWithCredentials(config)),
+  ));
 }

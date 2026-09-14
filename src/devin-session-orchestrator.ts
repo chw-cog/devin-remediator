@@ -60,7 +60,11 @@ export class DevinSessionOrchestrator extends Context.Service<
           }
           const matches = result.success;
           if (matches.length > 1) {
-            yield* repository.recordRecoveryMiss(work.session, "duplicates");
+            yield* repository.recordRecoveryMiss(
+              work.session,
+              "duplicates",
+              matches.map((session) => session.session_id),
+            );
             yield* Effect.logError(
               "duplicate Devin delivery tag; automatic submission blocked",
             ).pipe(Effect.annotateLogs({
@@ -77,11 +81,9 @@ export class DevinSessionOrchestrator extends Context.Service<
             );
             for (const row of rows) {
               yield* Effect.logWarning(
-                row.status === "pending"
-                  ? "repeated empty tag lookup; best-effort retry scheduled with duplicate risk"
-                  : row.status === "failed"
-                  ? "repeated empty tag lookup; submission attempts exhausted"
-                  : "empty tag lookup; waiting for another lookup after grace period",
+                row.recoveryBlocked
+                  ? "repeated recovery lookup failure; operator reconciliation required"
+                  : "empty tag lookup; retaining uncertain submission with backoff",
               ).pipe(Effect.annotateLogs({
                 status: row.status,
                 recovery_empty_checks: row.recoveryEmptyChecks,
@@ -119,9 +121,13 @@ export class DevinSessionOrchestrator extends Context.Service<
             yield* Effect.logWarning(
               "Devin reconciliation unavailable; retaining observations",
             ).pipe(Effect.annotateLogs(errorFields(result.failure)));
-            yield* Effect.forEach(batch, repository.releaseObservation, {
-              discard: true,
-            });
+            yield* Effect.forEach(
+              batch,
+              (work) => repository.recordLookupFailure(work, "unavailable"),
+              {
+                discard: true,
+              },
+            );
             return;
           }
           const sessions = new Map(
@@ -135,7 +141,7 @@ export class DevinSessionOrchestrator extends Context.Service<
                 yield* Effect.logWarning(
                   "Devin session missing from list response; retaining observations",
                 );
-                yield* repository.releaseObservation(work);
+                yield* repository.recordLookupFailure(work, "missing");
                 return;
               }
               yield* repository.recordObservation(work, session);

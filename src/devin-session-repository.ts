@@ -18,6 +18,10 @@ import { AppConfig } from "./config.ts";
 import { DatabaseClient, DatabaseError } from "./database.ts";
 import { observe } from "./logging.ts";
 import {
+  type LookupFailure,
+  lookupFailureUpdate,
+} from "./session-reconciliation.ts";
+import {
   continuationWindowElapsed,
   type DevinSession,
   findPullRequestNumber,
@@ -78,6 +82,8 @@ const observeClaim =
 const ownsClaim = (claim: SessionRecord) =>
   and(
     eq(devinSessions.id, claim.id),
+    eq(devinSessions.localOwnership, "tracking"),
+    eq(devinSessions.recoveryBlocked, false),
     eq(devinSessions.status, "submitting"),
     eq(devinSessions.attempts, claim.attempts),
     eq(devinSessions.claimVersion, claim.claimVersion),
@@ -98,6 +104,7 @@ export class DevinSessionRepository extends Context.Service<
     readonly recordRecoveryMiss: (
       claim: SessionRecord,
       outcome: "empty" | "unavailable" | "duplicates",
+      candidateIds?: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<SessionRecord>, DatabaseError>;
     readonly claimDueObservations: (
       after?: Pick<SessionRecord, "insertedAt" | "id">,
@@ -121,6 +128,10 @@ export class DevinSessionRepository extends Context.Service<
       claim: ObservationClaim,
       observation: DevinSession,
     ) => Effect.Effect<boolean, DatabaseError>;
+    readonly recordLookupFailure: (
+      claim: ObservationClaim,
+      outcome: LookupFailure,
+    ) => Effect.Effect<void, DatabaseError>;
     readonly releaseObservation: (
       claim: ObservationClaim,
     ) => Effect.Effect<void, DatabaseError>;
@@ -152,11 +163,14 @@ export class DevinSessionRepository extends Context.Service<
             updatedAt,
           })
             .where(and(
+              eq(devinSessions.localOwnership, "tracking"),
+              eq(devinSessions.recoveryBlocked, false),
               eq(devinSessions.status, "pending"),
               gte(devinSessions.attempts, config.devinMaxAttempts),
             ));
           const [active] = yield* tx.select({ count: count() })
-            .from(devinSessions).where(
+            .from(devinSessions).where(and(
+              eq(devinSessions.localOwnership, "tracking"),
               or(
                 eq(devinSessions.status, "submitting"),
                 and(
@@ -168,7 +182,7 @@ export class DevinSessionRepository extends Context.Service<
                   ),
                 ),
               ),
-            );
+            ));
           const capacity = Math.max(
             0,
             config.devinMaxConcurrentSessions - active.count,
@@ -182,6 +196,8 @@ export class DevinSessionRepository extends Context.Service<
 
           const pending = yield* tx.select({ id: devinSessions.id })
             .from(devinSessions).where(and(
+              eq(devinSessions.localOwnership, "tracking"),
+              eq(devinSessions.recoveryBlocked, false),
               eq(devinSessions.status, "pending"),
               isNull(devinSessions.devinSessionId),
               lt(devinSessions.attempts, config.devinMaxAttempts),
@@ -231,6 +247,8 @@ export class DevinSessionRepository extends Context.Service<
             updatedAt: DateTime.formatIso(now),
           }).where(and(
             eq(devinSessions.status, "submitting"),
+            eq(devinSessions.localOwnership, "tracking"),
+            lte(devinSessions.nextRecoveryAt, DateTime.formatIso(now)),
             isNull(devinSessions.devinSessionId),
             eq(devinSessions.recoveryBlocked, false),
             lt(
@@ -268,26 +286,27 @@ export class DevinSessionRepository extends Context.Service<
         function* (
           claim: SessionRecord,
           outcome: "empty" | "unavailable" | "duplicates",
+          candidateIds: ReadonlyArray<string> = [],
         ) {
-          const retry = outcome === "empty" && claim.recoveryEmptyChecks >= 1;
-          const status = retry
-            ? claim.attempts < config.devinMaxAttempts ? "pending" : "failed"
-            : "submitting";
+          const now = yield* DateTime.now;
+          const evidence = lookupFailureUpdate(
+            claim,
+            outcome === "empty" ? "missing" : outcome,
+            now,
+          );
           return yield* db.update(devinSessions).set({
+            ...evidence,
+            recoveryCandidateIds: outcome === "duplicates"
+              ? [...new Set(candidateIds)].slice(0, 200)
+              : claim.recoveryCandidateIds,
             claimVersion: sql`${devinSessions.claimVersion} + 1`,
-            status,
-            outputs: status === "failed"
-              ? appendOutput({
-                outcome: "failed",
-                summary:
-                  "Submission attempts exhausted after repeated empty recovery lookups.",
-              })
-              : devinSessions.outputs,
             recoveryEmptyChecks: outcome === "empty"
               ? claim.recoveryEmptyChecks + 1
               : 0,
-            recoveryBlocked: outcome === "duplicates",
-            updatedAt: yield* nowIso,
+            recoveryBlocked: outcome === "duplicates" ||
+              evidence.lookupFailureStreak >= 3,
+            nextRecoveryAt: evidence.nextObservationAt,
+            updatedAt: DateTime.formatIso(now),
           }).where(ownsClaim(claim)).returning();
         },
         Effect.mapError(databaseError),
@@ -323,6 +342,7 @@ export class DevinSessionRepository extends Context.Service<
           normalizedRemediationOutput(latest) !==
             normalizedRemediationOutput(state.output));
         return {
+          lookupFailureStreak: 0,
           providerStatus: remote.status,
           providerStatusDetail: remote.status_detail ?? null,
           providerLifecycle: state.status,
@@ -356,6 +376,7 @@ export class DevinSessionRepository extends Context.Service<
         delivery: DeliveryRecord,
         now: DateTime.Utc,
       ) {
+        if (after.localOwnership !== "tracking") return;
         if (before.providerLifecycle === after.providerLifecycle) {
           if (
             before.sessionUrl === after.sessionUrl &&
@@ -437,6 +458,7 @@ export class DevinSessionRepository extends Context.Service<
               const now = yield* DateTime.now;
               const due = and(
                 eq(devinSessions.status, "submitted"),
+                eq(devinSessions.localOwnership, "tracking"),
                 isNotNull(devinSessions.devinSessionId),
                 or(
                   isNull(devinSessions.providerLifecycle),
@@ -597,6 +619,7 @@ export class DevinSessionRepository extends Context.Service<
         and(
           eq(devinSessions.id, claim.session.id),
           eq(devinSessions.status, "submitted"),
+          eq(devinSessions.localOwnership, "tracking"),
           eq(devinSessions.devinSessionId, claim.session.devinSessionId),
           eq(
             devinSessions.observationVersion,
@@ -604,6 +627,22 @@ export class DevinSessionRepository extends Context.Service<
           ),
           gt(devinSessions.observationLeaseUntil, DateTime.formatIso(now)),
         );
+
+      const recordLookupFailure = Effect.fn(
+        "DevinSessionRepository.recordLookupFailure",
+      )(
+        function* (claim: ObservationClaim, outcome: LookupFailure) {
+          const now = yield* DateTime.now;
+          yield* db.update(devinSessions).set({
+            ...lookupFailureUpdate(claim.session, outcome, now),
+            observationLeaseUntil: null,
+            updatedAt: DateTime.formatIso(now),
+          }).where(ownsObservation(claim, now));
+        },
+        Effect.mapError(databaseError),
+        (effect, claim) =>
+          observeClaim("recordLookupFailure")(effect, claim.session),
+      );
 
       const releaseObservation = Effect.fn(
         "DevinSessionRepository.releaseObservation",
@@ -757,6 +796,7 @@ export class DevinSessionRepository extends Context.Service<
         rejectSubmission,
         recordObservation,
         releaseObservation,
+        recordLookupFailure,
         claimDueAnalyses,
         recordAnalysis,
       });
