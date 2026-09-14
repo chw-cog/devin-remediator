@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { eq } from "drizzle-orm";
-import { DateTime, Effect } from "effect";
+import { DateTime, Deferred, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { DatabaseClient } from "./database.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
@@ -179,4 +179,39 @@ recoveryTest(
       }),
     );
   },
+);
+
+recoveryTest(
+  "recordLookupFailure rejects a lease that expires while waiting for database acquisition",
+  Effect.gen(function* () {
+    const { db } = yield* DatabaseClient;
+    const repository = yield* DevinSessionRepository;
+    yield* seedRecovery(db);
+    const [claim] = yield* repository.claimDueObservations();
+    const [before] = yield* db.select().from(devinSessions);
+    assert.equal(before.observationLeaseUntil, "1970-01-01T00:01:00.000Z");
+    yield* TestClock.adjust("59 seconds");
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const holder = yield* db.transaction(() =>
+      Effect.gen(function* () {
+        yield* Deferred.succeed(held, undefined);
+        yield* Deferred.await(release);
+      })
+    ).pipe(Effect.forkScoped);
+    yield* Deferred.await(held);
+    const writer = yield* repository.recordLookupFailure(claim, "missing")
+      .pipe(Effect.forkScoped);
+    yield* TestClock.adjust("2 seconds");
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(holder);
+    yield* Fiber.join(writer);
+    const [after] = yield* db.select().from(devinSessions);
+    assert.deepEqual(after, before);
+    const [reclaimed] = yield* repository.claimDueObservations();
+    assert.ok(
+      reclaimed.session.observationVersion > claim.session.observationVersion,
+    );
+  }).pipe(Effect.scoped),
+  missingFetch,
 );

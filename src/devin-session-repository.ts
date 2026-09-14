@@ -632,12 +632,16 @@ export class DevinSessionRepository extends Context.Service<
         "DevinSessionRepository.recordLookupFailure",
       )(
         function* (claim: ObservationClaim, outcome: LookupFailure) {
-          const now = yield* DateTime.now;
-          yield* db.update(devinSessions).set({
-            ...lookupFailureUpdate(claim.session, outcome, now),
-            observationLeaseUntil: null,
-            updatedAt: DateTime.formatIso(now),
-          }).where(ownsObservation(claim, now));
+          yield* db.transaction((tx) =>
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              yield* tx.update(devinSessions).set({
+                ...lookupFailureUpdate(claim.session, outcome, now),
+                observationLeaseUntil: null,
+                updatedAt: DateTime.formatIso(now),
+              }).where(ownsObservation(claim, now));
+            })
+          );
         },
         Effect.mapError(databaseError),
         (effect, claim) =>

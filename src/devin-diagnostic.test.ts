@@ -122,3 +122,55 @@ Deno.test("diagnoseSession classifies transport failure and bounds timeout witho
     }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
   );
 });
+
+Deno.test("diagnoseSession classifies malformed JSON as invalid_response without exposing the body or retrying", async () => {
+  let requests = 0;
+  const result = await Effect.runPromise(
+    diagnose().pipe(
+      Effect.provideService(FetchHttpClient.Fetch, (input, init) => {
+        requests++;
+        assert.equal(
+          String(input),
+          "https://api.devin.ai/v3/organizations/org-test/sessions/remote-one",
+        );
+        assert.equal(init?.method, "GET");
+        assert.equal(
+          new Headers(init?.headers).get("authorization"),
+          "Bearer PRIVATE token",
+        );
+        return Promise.resolve(
+          new Response("{invalid PRIVATE body", {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }),
+    ),
+  );
+  assert.deepEqual(result, { outcome: "invalid_response" });
+  assert.equal(requests, 1);
+});
+
+Deno.test("diagnoseSession keeps response-body transport failures temporary", async () => {
+  let requests = 0;
+  const result = await Effect.runPromise(
+    diagnose().pipe(
+      Effect.provideService(FetchHttpClient.Fetch, (_input, init) => {
+        requests++;
+        assert.equal(init?.method, "GET");
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.error(new Error("PRIVATE body transport failure"));
+              },
+            }),
+            { status: 200 },
+          ),
+        );
+      }),
+    ),
+  );
+  assert.deepEqual(result, { outcome: "temporary" });
+  assert.equal(requests, 1);
+});

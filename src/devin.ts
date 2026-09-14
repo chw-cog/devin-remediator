@@ -491,7 +491,11 @@ export class DevinClient extends Context.Service<DevinClient, {
             Effect.flatMap(() =>
               client.get(`/sessions/${encodeURIComponent(sessionId)}`)
             ),
-            Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
+            // Keep body transport errors separate from JSON/schema decoding failures.
+            Effect.flatMap((response) => response.text),
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(Schema.fromJsonString(DevinSession)),
+            ),
             Effect.timeout("10 seconds"),
             Effect.result,
           );
