@@ -7,7 +7,8 @@ const IssueCount = Schema.Struct({
 });
 
 const PullRequest = Schema.Struct({
-  merged_at: Schema.NullOr(Schema.String),
+  created_at: Schema.DateTimeUtcFromString,
+  merged_at: Schema.NullOr(Schema.DateTimeUtcFromString),
 });
 
 export interface GitHubMetrics {
@@ -15,6 +16,7 @@ export interface GitHubMetrics {
   readonly repositoryIssues: number | null;
   readonly mergedPrNumbers: ReadonlyArray<number>;
   readonly unknownPrNumbers: ReadonlyArray<number>;
+  readonly pullRequests: ReadonlyMap<number, typeof PullRequest.Type>;
 }
 
 export const readGitHubMetrics = Effect.fn("readGitHubMetrics")(
@@ -31,6 +33,7 @@ export const readGitHubMetrics = Effect.fn("readGitHubMetrics")(
         repositoryIssues: null,
         mergedPrNumbers: [],
         unknownPrNumbers: prNumbers,
+        pullRequests: new Map<number, typeof PullRequest.Type>(),
       } satisfies GitHubMetrics;
     }
     const client = auth.success;
@@ -76,13 +79,15 @@ export const readGitHubMetrics = Effect.fn("readGitHubMetrics")(
     ], { concurrency: 2 });
     const mergedPrNumbers: number[] = [];
     const unknownPrNumbers: number[] = [];
+    const pullRequests = new Map<number, typeof PullRequest.Type>();
     if (Result.isFailure(pulls)) {
       unknownPrNumbers.push(...prNumbers);
     } else {
       for (const { number, result } of pulls.success) {
         if (Result.isFailure(result)) unknownPrNumbers.push(number);
-        else if (result.success.merged_at !== null) {
-          mergedPrNumbers.push(number);
+        else {
+          pullRequests.set(number, result.success);
+          if (result.success.merged_at !== null) mergedPrNumbers.push(number);
         }
       }
     }
@@ -96,6 +101,7 @@ export const readGitHubMetrics = Effect.fn("readGitHubMetrics")(
         : null,
       mergedPrNumbers,
       unknownPrNumbers,
+      pullRequests,
     } satisfies GitHubMetrics;
   },
 );

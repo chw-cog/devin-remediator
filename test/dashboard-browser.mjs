@@ -92,6 +92,23 @@ try {
     await fallback.locator("#refresh").getAttribute("href"),
     "/dashboard",
   );
+  assert.deepEqual(
+    await fallback.locator(".usage .metric-name").allTextContents(),
+    [
+      "Total observed usage",
+      "Average per session",
+      "Median time until fix proposed",
+      "Median time until merged",
+    ],
+  );
+  assert.equal(
+    await fallback.locator("#fix-proposed-timing .usage-value").textContent(),
+    "23m 40s",
+  );
+  assert.equal(
+    await fallback.locator("#merged-timing .usage-value").textContent(),
+    "2h 0m",
+  );
   await noJs.close();
   const context = await browser.newContext({ httpCredentials: credentials });
   const page = await context.newPage();
@@ -125,6 +142,12 @@ try {
   });
   snapshot.issues.assignedToDevin = 37;
   snapshot.usage.total = 150;
+  snapshot.timing.fixProposed.medianMilliseconds = 600000;
+  snapshot.timing.fixProposed.sampleCount = 29;
+  snapshot.timing.fixProposed.excludedSessions = 6;
+  snapshot.timing.merged.medianMilliseconds = 3600000;
+  snapshot.timing.merged.sampleCount = 19;
+  snapshot.timing.merged.excludedSessions = 16;
   snapshot.generatedAt = "2026-09-14T10:43:00.000Z";
   snapshot.activeSessions = [snapshot.activeSessions[0]];
   snapshot.activeSessions[0].issue.title = '<img src=x onerror="alert(1)">';
@@ -135,6 +158,30 @@ try {
     document.querySelectorAll(".metric-value")[1].textContent === "37"
   );
   assert.equal(calls, 1);
+  assert.equal(
+    await page.locator("#fix-proposed-timing .usage-value").textContent(),
+    "10m 0s",
+  );
+  assert.equal(
+    await page.locator("#merged-timing .usage-value").textContent(),
+    "1h 0m",
+  );
+  assert.match(
+    await page.locator("#fix-proposed-timing p").textContent(),
+    /29 samples/,
+  );
+  assert.match(
+    await page.locator("#merged-timing p").textContent(),
+    /19 samples/,
+  );
+  assert.equal(
+    await page.locator("#excluded-proposed-samples").textContent(),
+    "6",
+  );
+  assert.equal(
+    await page.locator("#excluded-merged-samples").textContent(),
+    "16",
+  );
   assert.equal(await page.locator(".session").count(), 1);
   assert.equal(await page.locator(".session img, .session script").count(), 0);
   assert.equal(
@@ -191,6 +238,9 @@ try {
   snapshot.issues.repositoryTotal = null;
   snapshot.pullRequests.merged = null;
   snapshot.pullRequests.unknownMergeState = 2;
+  snapshot.timing.merged.medianMilliseconds = null;
+  snapshot.timing.merged.sampleCount = 0;
+  snapshot.timing.merged.excludedSessions = 35;
   await page.evaluate(() => {
     Object.defineProperty(document, "hidden", {
       configurable: true,
@@ -205,6 +255,22 @@ try {
   assert.equal(await page.locator("#empty-sessions").isVisible(), true);
   assert.equal(await page.locator("#github-notice").isVisible(), true);
   assert.equal(await page.locator(".session").count(), 0);
+  assert.equal(
+    await page.locator("#fix-proposed-timing .usage-value").textContent(),
+    "10m 0s",
+  );
+  assert.equal(
+    await page.locator("#merged-timing .usage-value").textContent(),
+    "—",
+  );
+  assert.match(
+    await page.locator("#merged-timing p").textContent(),
+    /0 samples/,
+  );
+  assert.equal(
+    await page.locator("#excluded-merged-samples").textContent(),
+    "35",
+  );
   snapshot = structuredClone(initial);
   snapshot.activeSessions[0].acus = 4.5;
   await page.locator("#refresh").click();
@@ -231,6 +297,14 @@ try {
       false,
       `overflow at ${width}`,
     );
+    const proposed = await page.locator("#fix-proposed-timing").boundingBox();
+    const merged = await page.locator("#merged-timing").boundingBox();
+    if (width > 480) {
+      assert.equal(proposed.y, merged.y);
+      assert.ok(proposed.x < merged.x, `proposal must be left at ${width}`);
+    } else {
+      assert.ok(proposed.y < merged.y, "proposal must precede merge on mobile");
+    }
   }
   mode = "unauthorized";
   await page.locator("#refresh").click();
@@ -248,7 +322,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: live HTTP auth, SSR without JavaScript, automatic/manual refresh, safe DOM updates, stale/partial/empty states, no overlapping requests, hidden-tab pause/resume, focus/details preservation, mobile layout, and expired-login handling.",
+    "PASS: live HTTP auth, SSR without JavaScript, milestone values/order/sample counts, automatic/manual refresh, safe DOM updates, stale/partial/empty states, no overlapping requests, hidden-tab pause/resume, focus/details preservation, mobile layout, and expired-login handling.",
   );
 } finally {
   await browser?.close();

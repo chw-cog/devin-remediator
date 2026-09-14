@@ -156,9 +156,18 @@ For operational tasks, see these guides:
    credentials. Use HTTPS when deployed because Basic auth does not encrypt
    credentials.
 
-The dashboard shows issue and PR counts, ACU usage, observed completion times,
-and up to three ongoing or attention-needed sessions. Repository totals come
-from GitHub. Devin metrics cover work tracked by this app only.
+The dashboard shows issue and PR counts, ACU usage, PR milestone times, and up
+to three ongoing or attention-needed sessions. Repository totals come from
+GitHub. Devin metrics cover work tracked by this app only.
+
+Both timing medians start at Devin session creation. **Time until fix proposed**
+ends at GitHub PR creation, including drafts; it does not imply passing CI.
+**Time until merged** ends at GitHub's merge timestamp and includes review time.
+Each tracked session contributes at most one sample per milestone. Missing or
+invalid timestamps are excluded, and no samples displays `—`. Existing tracked
+PRs use their original GitHub timestamps; Devin's `finished` state is not
+required. The JSON snapshot exposes these metrics under `timing.fixProposed` and
+`timing.merged`, with sample counts and excluded-session counts.
 
 A small script refreshes the numbers and session cards every 30 seconds while
 the tab is visible. The page also works without JavaScript.

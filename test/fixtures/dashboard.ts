@@ -34,11 +34,19 @@ const snapshot: MetricsSnapshot = {
     oldestObservationAt: "2026-09-01T12:00:00.000Z",
     latestObservationAt: "2026-09-14T10:41:42.000Z",
   },
-  completion: {
-    medianMilliseconds: 1420000,
-    sampleCount: 28,
-    excludedSessions: 7,
-    definition: "creation_to_first_observed_completion_including_waiting",
+  timing: {
+    fixProposed: {
+      medianMilliseconds: 1420000,
+      sampleCount: 28,
+      excludedSessions: 7,
+      definition: "session_creation_to_pr_creation",
+    },
+    merged: {
+      medianMilliseconds: 7200000,
+      sampleCount: 18,
+      excludedSessions: 17,
+      definition: "session_creation_to_pr_merge",
+    },
   },
   github: { status: "available", checkedAt: "2026-09-14T10:42:00.000Z" },
   activeSessionCount: 3,

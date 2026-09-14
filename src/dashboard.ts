@@ -124,7 +124,7 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
                 "partial"
               ? ""
               : html`hidden`}
-              role="status"><strong>GitHub data is incomplete.</strong> Unavailable repository or merge counts appear as —, not zero. Local session observations remain available.</div>
+              role="status"><strong>GitHub data is incomplete.</strong> Unavailable repository or merge counts appear as —, not zero. Timing medians include only available PR timestamps. Local session observations remain available.</div>
             <section aria-labelledby="outcomes">
               <div
                 class="section-heading"><h2 id="outcomes">Outcomes at a glance</h2><span>All time · scoped below</span></div>
@@ -161,10 +161,16 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
                 <div><div class="metric-name">Average per session</div><strong class="usage-value">${number(
                   snapshot.usage.averagePerSession,
                 )} <span>ACUs</span></strong><p>Known-usage sessions only</p></div>
-                <div><div class="metric-name">Median time to completion</div><strong class="usage-value">${duration(
-                  snapshot.completion.medianMilliseconds,
-                )}</strong><p>First observed completion · ${snapshot.completion
-                  .sampleCount} samples</p></div>
+                <div
+                  id="fix-proposed-timing"><div class="metric-name">Median time until fix proposed</div><strong class="usage-value">${duration(
+                    snapshot.timing.fixProposed.medianMilliseconds,
+                  )}</strong><p>Session start → PR opened · ${snapshot.timing
+                    .fixProposed.sampleCount} samples</p></div>
+                <div
+                  id="merged-timing"><div class="metric-name">Median time until merged</div><strong class="usage-value">${duration(
+                    snapshot.timing.merged.medianMilliseconds,
+                  )}</strong><p>Session start → PR merged · ${snapshot.timing
+                    .merged.sampleCount} samples</p></div>
               </div>
             </section>
             <section class="sessions" aria-labelledby="sessions">
@@ -194,9 +200,11 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
                   .usage.oldestObservationAt ??
                   "unknown"} to ${snapshot.usage.latestObservationAt ??
                   "unknown"}</span>. Observations can lag or stop for released sessions.</li>
-                <li>Completion time runs from session creation to the first completion observed by this app. It includes startup, pauses, waiting and polling lag—not active execution time. Resumption does not reset first completion. <span id="excluded-samples">${snapshot
-                  .completion
-                  .excludedSessions}</span> sessions have no valid sample.</li>
+                <li>Both timing medians start at Devin session creation and use GitHub timestamps, not Devin’s finished state. “Fix proposed” means the linked PR was opened (including drafts), not that CI passed. Time until merged includes review and waiting; neither metric is active execution time. Each tracked session contributes at most one sample per milestone, including released and archived sessions. Missing or invalid timestamps are excluded: <span id="excluded-proposed-samples">${snapshot
+                  .timing.fixProposed
+                  .excludedSessions}</span> sessions without a proposal sample; <span id="excluded-merged-samples">${snapshot
+                  .timing.merged
+                  .excludedSessions}</span> without a merge sample. Unmerged PRs have no merge sample. Medians describe separate cohorts; subtracting them does not give median review time.</li>
                 <li>Ongoing, paused, unknown and attention-needed sessions may appear, up to three, ordered by latest observation. Provider state and remediation outcome are separate; “Fix proposed” does not mean merged. Issue titles come from received webhooks, not a current GitHub lookup.</li>
               </ul>
             </details>
@@ -223,7 +231,7 @@ h2{margin:0;font-size:14px;font-weight:650}.section-heading span,.scope-note{col
 .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{min-width:0;padding:19px 18px;border:1px solid #dce3d8;border-radius:9px;background:#fff}
 .primary{background:#eaf2e7}.metric-name{font-size:12px;color:#586c60}.metric-value{display:block;font-size:37px;font-weight:550;letter-spacing:-.06em;line-height:1.5;margin:12px 0;font-variant-numeric:tabular-nums}
 .metric p,.usage p{font-size:11px;color:#586c60;line-height:1.5;margin:6px 0 0}.scope-note{margin:10px 0 0}
-.usage{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:20px;border:1px solid #dce3d8;border-radius:9px;background:#fff}.usage>div{padding:20px;min-width:0}
+.usage{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:20px;border:1px solid #dce3d8;border-radius:9px;background:#fff}.usage>div{padding:20px;min-width:0}
 .usage>div+div{border-left:1px solid #dce3d8}.usage-value{display:block;font-size:26px;font-weight:550;letter-spacing:-.04em;margin:8px 0;font-variant-numeric:tabular-nums}.usage-value span{font-size:12px;font-weight:400;letter-spacing:0;color:#586c60}
 .sessions{margin-top:28px}.session-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.session{min-width:0;border:1px solid #dce3d8;border-radius:9px;background:#fff;padding:20px}
 .badge{display:inline-block;border-radius:5px;padding:4px 7px;font-size:10px;font-weight:650;background:#eaf2e7;color:#326e50}.badge.attention{color:#82532c;background:#fbeddc}
@@ -234,7 +242,7 @@ h4 a{text-decoration:none}h4 a:hover{text-decoration:underline}dl{margin:0}dl>di
 .empty{padding:34px;text-align:center;border:1px dashed #dce3d8;border-radius:9px}.empty p{color:#586c60;font-size:13px;line-height:1.6}
 details{margin-top:24px;color:#586c60;font-size:11px;line-height:1.7}summary{cursor:pointer}details ul{padding-left:20px;max-width:860px}
 .app-footer{margin-top:23px;padding-top:18px;border-top:1px solid #dce3d8;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:#586c60;font-size:11px}
-@media(max-width:800px){body{padding:12px}main,.app-header{padding:22px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.session-list{grid-template-columns:minmax(0,1fr)}h4{min-height:0}}
+@media(max-width:800px){body{padding:12px}main,.app-header{padding:22px}.metrics,.usage{grid-template-columns:repeat(2,minmax(0,1fr))}.usage>div:nth-child(3){border-left:0}.usage>div:nth-child(n+3){border-top:1px solid #dce3d8}.session-list{grid-template-columns:minmax(0,1fr)}h4{min-height:0}}
 @media(max-width:480px){.usage{grid-template-columns:minmax(0,1fr)}.usage>div+div{border-left:0;border-top:1px solid #dce3d8}main{padding:18px}.metric{padding:14px}.metric-value{font-size:31px}}
 `;
 

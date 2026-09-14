@@ -30,8 +30,11 @@ function testLayer(
       request.url.includes("/search/issues")
         ? { total_count: 1248, incomplete_results: false }
         : {
+          created_at: request.url.endsWith("/100")
+            ? "2026-09-14T00:01:00Z"
+            : "2026-09-14T00:03:00Z",
           merged_at: request.url.endsWith("/100")
-            ? "2026-09-14T00:00:00Z"
+            ? "2026-09-14T00:10:00Z"
             : null,
         },
     ),
@@ -105,7 +108,7 @@ const seed = Effect.fn("metricsTest.seed")(function* (
   });
 });
 
-Deno.test("metrics deduplicate issue/PR cohorts, include inactive usage, and compute observed median", async () => {
+Deno.test("metrics deduplicate issue/PR lookups and include inactive sessions in PR milestone medians", async () => {
   const { layer, requests } = testLayer();
   await Effect.runPromise(
     Effect.gen(function* () {
@@ -165,9 +168,20 @@ Deno.test("metrics deduplicate issue/PR cohorts, include inactive usage, and com
       assert.equal(snapshot.usage.measuredSessions, 4);
       assert.equal(snapshot.usage.missingSessions, 1);
       assert.equal(snapshot.usage.trackedSessions, 5);
-      assert.equal(snapshot.completion.medianMilliseconds, 240000);
-      assert.equal(snapshot.completion.sampleCount, 4);
-      assert.equal(snapshot.completion.excludedSessions, 1);
+      assert.deepEqual(snapshot.timing, {
+        fixProposed: {
+          medianMilliseconds: 60000,
+          sampleCount: 3,
+          excludedSessions: 2,
+          definition: "session_creation_to_pr_creation",
+        },
+        merged: {
+          medianMilliseconds: 600000,
+          sampleCount: 2,
+          excludedSessions: 3,
+          definition: "session_creation_to_pr_merge",
+        },
+      });
       assert.equal(snapshot.activeSessionCount, 2);
       assert.deepEqual(snapshot.activeSessions.map((s) => s.id), [
         "remote-d",
@@ -209,7 +223,10 @@ Deno.test("GitHub partial failures remain unknown while local metrics and confir
       return Response.json({ total_count: 2, incomplete_results: true });
     }
     if (request.url.endsWith("/100")) {
-      return Response.json({ merged_at: "2026-09-14T00:00:00Z" });
+      return Response.json({
+        created_at: "2026-09-14T00:01:00Z",
+        merged_at: "2026-09-14T00:10:00Z",
+      });
     }
     return Response.json({ message: "unavailable" }, { status: 403 });
   });
@@ -233,7 +250,12 @@ Deno.test("GitHub partial failures remain unknown while local metrics and confir
       });
       assert.equal(snapshot.usage.total, 0);
       assert.equal(snapshot.usage.averagePerSession, 0);
-      assert.equal(snapshot.completion.medianMilliseconds, null);
+      assert.equal(snapshot.timing.fixProposed.medianMilliseconds, 60000);
+      assert.equal(snapshot.timing.merged.medianMilliseconds, 600000);
+      assert.equal(snapshot.timing.fixProposed.sampleCount, 1);
+      assert.equal(snapshot.timing.merged.sampleCount, 1);
+      assert.equal(snapshot.timing.fixProposed.excludedSessions, 1);
+      assert.equal(snapshot.timing.merged.excludedSessions, 1);
       const app = yield* createApp;
       const response = yield* Effect.promise(async () =>
         await app.request("/dashboard", { headers: auth })
@@ -242,6 +264,14 @@ Deno.test("GitHub partial failures remain unknown while local metrics and confir
       assert.equal(response.status, 200);
       assert.match(text, /GitHub data is incomplete/);
       assert.match(text, /1 confirmed · 1 unchecked/);
+      assert.match(text, /Timing medians include only available PR timestamps/);
+      assert.match(text, /Median time until fix proposed/);
+      assert.match(text, /Median time until merged/);
+      assert.doesNotMatch(text, /Median time to completion/);
+      assert.ok(
+        text.indexOf("Median time until fix proposed") <
+          text.indexOf("Median time until merged"),
+      );
     }).pipe(Effect.provide(layer)),
   );
 });
@@ -351,6 +381,136 @@ Deno.test("active session cap, safe links, escaping and auth are enforced on rea
   );
 });
 
+Deno.test("PR milestones work while Devin waits and a later merge changes only the merge cohort", async () => {
+  let merged = false;
+  const { layer } = testLayer((request) =>
+    Response.json(
+      request.url.includes("/search/issues")
+        ? { total_count: 1, incomplete_results: false }
+        : {
+          created_at: "2026-09-14T00:04:00Z",
+          merged_at: merged ? "2026-09-14T00:20:00Z" : null,
+        },
+    )
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seed("waiting", 1, {
+        prNumber: 100,
+        providerLifecycle: "needs_input",
+        providerStatusDetail: "waiting_for_user",
+        completionObservedAt: null,
+      });
+      const metrics = yield* Metrics;
+      assert.ok(metrics.dashboard);
+      const before = yield* metrics.dashboard.snapshot;
+      assert.equal(before.timing.fixProposed.medianMilliseconds, 240000);
+      assert.equal(before.timing.fixProposed.sampleCount, 1);
+      assert.equal(before.timing.merged.medianMilliseconds, null);
+      assert.equal(before.timing.merged.sampleCount, 0);
+      assert.equal(before.timing.merged.excludedSessions, 1);
+      merged = true;
+      yield* TestClock.adjust("31 seconds");
+      const after = yield* metrics.dashboard.snapshot;
+      assert.deepEqual(after.timing.fixProposed, before.timing.fixProposed);
+      assert.equal(after.timing.merged.medianMilliseconds, 1200000);
+      assert.equal(after.timing.merged.sampleCount, 1);
+      assert.equal(after.timing.merged.excludedSessions, 0);
+      assert.equal(after.activeSessions[0].lifecycle, "needs_input");
+    }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
+  );
+});
+
+Deno.test("invalid, missing and pre-session PR timestamps cannot fabricate duration samples", async () => {
+  const prs: Record<string, unknown> = {
+    "100": {
+      created_at: "2026-09-14T00:00:00Z",
+      merged_at: "2026-09-14T00:00:00Z",
+    },
+    "101": {
+      created_at: "2026-09-13T23:59:00Z",
+      merged_at: "2026-09-14T00:10:00Z",
+    },
+    "102": { created_at: "not-a-date", merged_at: null },
+    "103": { merged_at: "2026-09-14T00:10:00Z" },
+    "104": {
+      created_at: "2026-09-14T00:02:00Z",
+      merged_at: "2026-09-14T00:01:00Z",
+    },
+    "105": {
+      created_at: "2026-09-14T00:01:00Z",
+      merged_at: "2026-09-14T00:10:00Z",
+    },
+    "106": {
+      created_at: "2026-09-14T00:01:00Z",
+      merged_at: "invalid",
+    },
+    "107": {
+      created_at: "2026-09-14T00:04:00Z",
+      merged_at: null,
+      state: "closed",
+    },
+  };
+  const { layer } = testLayer((request) =>
+    Response.json(
+      request.url.includes("/search/issues")
+        ? { total_count: 8, incomplete_results: false }
+        : prs[new URL(request.url).pathname.split("/").at(-1) ?? ""],
+    )
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      for (let number = 100; number <= 107; number++) {
+        yield* seed(String(number), number, {
+          prNumber: number,
+          ...(number === 105 ? { providerCreatedAt: null } : {}),
+          completionObservedAt: "2026-09-14T00:30:00Z",
+        });
+      }
+      const metrics = yield* Metrics;
+      assert.ok(metrics.dashboard);
+      const snapshot = yield* metrics.dashboard.snapshot;
+      assert.deepEqual(snapshot.timing.fixProposed, {
+        medianMilliseconds: 120000,
+        sampleCount: 3,
+        excludedSessions: 5,
+        definition: "session_creation_to_pr_creation",
+      });
+      assert.deepEqual(snapshot.timing.merged, {
+        medianMilliseconds: 0,
+        sampleCount: 1,
+        excludedSessions: 7,
+        definition: "session_creation_to_pr_merge",
+      });
+      assert.equal(snapshot.github.status, "partial");
+      assert.equal(snapshot.pullRequests.unknownMergeState, 3);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+Deno.test("unavailable GitHub timestamps yield unknown timing even when Devin completed", async () => {
+  const { layer } = testLayer(() =>
+    Response.json({ message: "unavailable" }, { status: 403 })
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seed("completed", 1, {
+        prNumber: 100,
+        completionObservedAt: "2026-09-14T00:01:00Z",
+        providerLifecycle: "completed",
+      });
+      const metrics = yield* Metrics;
+      assert.ok(metrics.dashboard);
+      const snapshot = yield* metrics.dashboard.snapshot;
+      for (const milestone of Object.values(snapshot.timing)) {
+        assert.equal(milestone.medianMilliseconds, null);
+        assert.equal(milestone.sampleCount, 0);
+        assert.equal(milestone.excludedSessions, 1);
+      }
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
 Deno.test("empty metrics distinguish no observations from measured zero", async () => {
   const { layer } = testLayer();
   await Effect.runPromise(
@@ -360,7 +520,10 @@ Deno.test("empty metrics distinguish no observations from measured zero", async 
       const snapshot = yield* metrics.dashboard.snapshot;
       assert.equal(snapshot.usage.total, null);
       assert.equal(snapshot.usage.averagePerSession, null);
-      assert.equal(snapshot.completion.medianMilliseconds, null);
+      assert.equal(snapshot.timing.fixProposed.medianMilliseconds, null);
+      assert.equal(snapshot.timing.merged.medianMilliseconds, null);
+      assert.equal(snapshot.timing.fixProposed.sampleCount, 0);
+      assert.equal(snapshot.timing.merged.sampleCount, 0);
       assert.equal(snapshot.issues.assignedToDevin, 0);
       assert.equal(snapshot.pullRequests.merged, 0);
       assert.deepEqual(snapshot.activeSessions, []);
@@ -445,7 +608,7 @@ Deno.test("concurrent readers share a snapshot and see new observations after ca
     Effect.gen(function* () {
       yield* seed("first", 1, {
         acusConsumed: 1,
-        completionObservedAt: "2026-09-14T00:01:00.000Z",
+        prNumber: 100,
       });
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
@@ -454,9 +617,9 @@ Deno.test("concurrent readers share a snapshot and see new observations after ca
         metrics.dashboard.snapshot,
         metrics.dashboard.snapshot,
       ], { concurrency: 3 });
-      assert.equal(requests.length, 1);
-      assert.equal(snapshots[0].completion.medianMilliseconds, 60000);
-      yield* seed("second", 2, { acusConsumed: 2 });
+      assert.equal(requests.length, 2);
+      assert.equal(snapshots[0].timing.fixProposed.medianMilliseconds, 60000);
+      yield* seed("second", 2, { acusConsumed: 2, prNumber: 101 });
       assert.equal(
         (yield* metrics.dashboard.snapshot).issues.assignedToDevin,
         1,
@@ -466,7 +629,10 @@ Deno.test("concurrent readers share a snapshot and see new observations after ca
       assert.equal(refreshed.issues.assignedToDevin, 2);
       assert.equal(refreshed.usage.total, 3);
       assert.equal(refreshed.usage.averagePerSession, 1.5);
-      assert.equal(requests.length, 2);
+      assert.equal(refreshed.timing.fixProposed.medianMilliseconds, 120000);
+      assert.equal(refreshed.timing.merged.medianMilliseconds, 600000);
+      assert.equal(refreshed.timing.merged.sampleCount, 1);
+      assert.equal(requests.length, 5);
     }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
   );
 });

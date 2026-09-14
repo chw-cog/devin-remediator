@@ -131,7 +131,8 @@ function display(snapshot) {
   const usageValues = [
     formatNumber(snapshot.usage.total),
     formatNumber(snapshot.usage.averagePerSession),
-    formatDuration(snapshot.completion.medianMilliseconds),
+    formatDuration(snapshot.timing.fixProposed.medianMilliseconds),
+    formatDuration(snapshot.timing.merged.medianMilliseconds),
   ];
   const cards = snapshot.activeSessions.map(sessionCard);
   const mergedNote = snapshot.pullRequests.merged === null
@@ -164,8 +165,12 @@ function display(snapshot) {
     `Usage known for ${snapshot.usage.measuredSessions} of ${snapshot.usage.trackedSessions} sessions`,
   );
   setText(
-    ".usage > div:last-child p",
-    `First observed completion · ${snapshot.completion.sampleCount} samples`,
+    "#fix-proposed-timing p",
+    `Session start → PR opened · ${snapshot.timing.fixProposed.sampleCount} samples`,
+  );
+  setText(
+    "#merged-timing p",
+    `Session start → PR merged · ${snapshot.timing.merged.sampleCount} samples`,
   );
   setText(
     ".sessions .section-heading span",
@@ -212,7 +217,14 @@ function display(snapshot) {
       snapshot.usage.latestObservationAt ?? "unknown"
     }`,
   );
-  setText("#excluded-samples", String(snapshot.completion.excludedSessions));
+  setText(
+    "#excluded-proposed-samples",
+    String(snapshot.timing.fixProposed.excludedSessions),
+  );
+  setText(
+    "#excluded-merged-samples",
+    String(snapshot.timing.merged.excludedSessions),
+  );
 }
 
 function schedule() {

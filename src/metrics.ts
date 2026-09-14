@@ -25,6 +25,29 @@ const sessionUrl = Schema.String.check(Schema.isPattern(
 
 const measuredAcus = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 
+export interface DurationMetrics {
+  readonly medianMilliseconds: number | null;
+  readonly sampleCount: number;
+  readonly excludedSessions: number;
+}
+
+const summarizeDurations = (
+  values: number[],
+  trackedSessions: number,
+): DurationMetrics => {
+  values.sort((a, b) => a - b);
+  const middle = Math.floor(values.length / 2);
+  return {
+    medianMilliseconds: values.length === 0
+      ? null
+      : values.length % 2 === 1
+      ? values[middle]
+      : (values[middle - 1] + values[middle]) / 2,
+    sampleCount: values.length,
+    excludedSessions: trackedSessions - values.length,
+  };
+};
+
 export interface DashboardSession {
   readonly id: string;
   readonly url: string | null;
@@ -73,12 +96,13 @@ export interface MetricsSnapshot {
     readonly oldestObservationAt: string | null;
     readonly latestObservationAt: string | null;
   };
-  readonly completion: {
-    readonly medianMilliseconds: number | null;
-    readonly sampleCount: number;
-    readonly excludedSessions: number;
-    readonly definition:
-      "creation_to_first_observed_completion_including_waiting";
+  readonly timing: {
+    readonly fixProposed: DurationMetrics & {
+      readonly definition: "session_creation_to_pr_creation";
+    };
+    readonly merged: DurationMetrics & {
+      readonly definition: "session_creation_to_pr_merge";
+    };
   };
   readonly github: {
     readonly checkedAt: string;
@@ -150,7 +174,6 @@ export class Metrics extends Context.Service<Metrics, {
         }
         const allSessions = [...tracked].map(([id, row]) => ({ id, ...row }));
         const values: number[] = [];
-        const durations: number[] = [];
         const observations: string[] = [];
         for (const { session } of allSessions) {
           if (Schema.is(measuredAcus)(session.acusConsumed)) {
@@ -159,29 +182,9 @@ export class Metrics extends Context.Service<Metrics, {
           if (session.lastObservedAt !== null) {
             observations.push(session.lastObservedAt);
           }
-          if (
-            session.providerCreatedAt !== null &&
-            session.completionObservedAt !== null
-          ) {
-            const completion = DateTime.make(session.completionObservedAt);
-            if (Option.isSome(completion)) {
-              const elapsed = DateTime.toEpochMillis(completion.value) -
-                session.providerCreatedAt * 1000;
-              if (Number.isFinite(elapsed) && elapsed >= 0) {
-                durations.push(elapsed);
-              }
-            }
-          }
         }
-        durations.sort((a, b) => a - b);
         observations.sort();
         deliveries.sort();
-        const middle = Math.floor(durations.length / 2);
-        const median = durations.length === 0
-          ? null
-          : durations.length % 2 === 1
-          ? durations[middle]
-          : (durations[middle - 1] + durations[middle]) / 2;
         const total = values.length === 0
           ? null
           : values.reduce((a, b) => a + b, 0);
@@ -189,6 +192,29 @@ export class Metrics extends Context.Service<Metrics, {
           ...new Set([...issuePrs.values()].flatMap((prs) => [...prs])),
         ].sort((a, b) => a - b);
         const remote = yield* readGitHubMetrics(config.repository, prNumbers);
+        const proposedDurations: number[] = [];
+        const mergedDurations: number[] = [];
+        for (const { session } of allSessions) {
+          if (session.providerCreatedAt === null || session.prNumber === null) {
+            continue;
+          }
+          const pr = remote.pullRequests.get(session.prNumber);
+          if (!pr) continue;
+          const startedAt = session.providerCreatedAt * 1000;
+          const proposedAt = DateTime.toEpochMillis(pr.created_at);
+          const proposedElapsed = proposedAt - startedAt;
+          if (!Number.isFinite(proposedElapsed) || proposedElapsed < 0) {
+            continue;
+          }
+          proposedDurations.push(proposedElapsed);
+          if (pr.merged_at !== null) {
+            const mergedAt = DateTime.toEpochMillis(pr.merged_at);
+            const mergedElapsed = mergedAt - startedAt;
+            if (Number.isFinite(mergedElapsed) && mergedAt >= proposedAt) {
+              mergedDurations.push(mergedElapsed);
+            }
+          }
+        }
         const merged = new Set(remote.mergedPrNumbers);
         const completeMerges = remote.unknownPrNumbers.length === 0;
         const active = allSessions.filter(({ session }) =>
@@ -271,12 +297,15 @@ export class Metrics extends Context.Service<Metrics, {
             oldestObservationAt: observations[0] ?? null,
             latestObservationAt: observations.at(-1) ?? null,
           },
-          completion: {
-            medianMilliseconds: median,
-            sampleCount: durations.length,
-            excludedSessions: allSessions.length - durations.length,
-            definition:
-              "creation_to_first_observed_completion_including_waiting",
+          timing: {
+            fixProposed: {
+              ...summarizeDurations(proposedDurations, allSessions.length),
+              definition: "session_creation_to_pr_creation",
+            },
+            merged: {
+              ...summarizeDurations(mergedDurations, allSessions.length),
+              definition: "session_creation_to_pr_merge",
+            },
           },
           github: {
             checkedAt: remote.checkedAt,
