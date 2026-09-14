@@ -3,7 +3,7 @@ import { Deferred, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { FetchHttpClient } from "effect/unstable/http";
 import { DevinClient } from "./devin.ts";
-import { recoveryRemote } from "../test/session-recovery-fixtures.ts";
+import { recoveryRemote } from "../test/fixtures/session-recovery.ts";
 
 const diagnose = (id = "remote-one") =>
   DevinClient.use((client) => client.diagnoseSession(id)).pipe(

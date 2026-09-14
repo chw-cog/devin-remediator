@@ -6,7 +6,7 @@ import { runSessionAdmin, sessionAdminEnvironment } from "./session-admin.ts";
 import {
   recoveryRemote,
   seedRecovery,
-} from "../test/session-recovery-fixtures.ts";
+} from "../test/fixtures/session-recovery.ts";
 
 async function invoke(
   args: string[],

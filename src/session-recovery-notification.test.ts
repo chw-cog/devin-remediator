@@ -7,7 +7,7 @@ import { SessionAdministration } from "./session-administration.ts";
 import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import { GitHubClient } from "./github.ts";
 import { attentionNotifications } from "./schemas.ts";
-import { seedRecovery } from "../test/session-recovery-fixtures.ts";
+import { seedRecovery } from "../test/fixtures/session-recovery.ts";
 import { githubAppEnv } from "../test/fixtures/github-app.ts";
 for (const receipt of [false, true]) {
   Deno.test(`session recovery: local resolution reconciles historical send without repost (receipt ${receipt})`, async () => {

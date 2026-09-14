@@ -12,7 +12,7 @@ import {
   recoveryRemote,
   recoveryTest,
   seedRecovery,
-} from "../test/session-recovery-fixtures.ts";
+} from "../test/fixtures/session-recovery.ts";
 
 recoveryTest(
   "missing reconciliation escalates durably, backs off to one hour, and never releases uncertain capacity",

@@ -1,18 +1,18 @@
 import { ConfigProvider, DateTime, Effect, Layer, Logger } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { TestClock } from "effect/testing";
-import { type AppDatabase, DatabaseClient } from "../src/database.ts";
-import { DevinClient, type DevinSession } from "../src/devin.ts";
-import { DevinSessionOrchestrator } from "../src/devin-session-orchestrator.ts";
+import { type AppDatabase, DatabaseClient } from "../../src/database.ts";
+import { DevinClient, type DevinSession } from "../../src/devin.ts";
+import { DevinSessionOrchestrator } from "../../src/devin-session-orchestrator.ts";
 import {
   DevinSessionRepository,
   type SessionRecord,
-} from "../src/devin-session-repository.ts";
-import { GitHubClient } from "../src/github.ts";
-import { GitHubCommentNotifier } from "../src/github-comment-notifier.ts";
-import { SessionAdministration } from "../src/session-administration.ts";
-import { devinSessions, githubWebhookDeliveries } from "../src/schemas.ts";
-import { WebhookEventProcessors } from "../src/webhook-event-processors.ts";
+} from "../../src/devin-session-repository.ts";
+import { GitHubClient } from "../../src/github.ts";
+import { GitHubCommentNotifier } from "../../src/github-comment-notifier.ts";
+import { SessionAdministration } from "../../src/session-administration.ts";
+import { devinSessions, githubWebhookDeliveries } from "../../src/schemas.ts";
+import { WebhookEventProcessors } from "../../src/webhook-event-processors.ts";
 
 export const recoveryRemote = (
   id = "remote-one",

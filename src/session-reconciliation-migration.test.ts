@@ -13,7 +13,7 @@ import { SessionAdministration } from "./session-administration.ts";
 import {
   missingFetch,
   recoveryLayer,
-} from "../test/session-recovery-fixtures.ts";
+} from "../test/fixtures/session-recovery.ts";
 import { Reactivity } from "effect/unstable/reactivity";
 
 Deno.test("ACU/generation then session_reconciliation migrate populated baseline with foreign keys and immutable evidence intact", async () => {

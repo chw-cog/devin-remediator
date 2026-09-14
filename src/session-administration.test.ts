@@ -23,7 +23,7 @@ import {
   recoveryRemote,
   recoveryTest,
   seedRecovery,
-} from "../test/session-recovery-fixtures.ts";
+} from "../test/fixtures/session-recovery.ts";
 
 const failed = Effect.fnUntraced(
   function* <A, E, R>(
