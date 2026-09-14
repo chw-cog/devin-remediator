@@ -2,8 +2,11 @@
 
 The remediator follows continuable Devin sessions without waking them or
 changing provider controls. Operators continue work in the Devin UI. The service
-does not send messages, approve actions, change budgets, notify GitHub, archive
+does not send messages, approve actions, change existing budgets, archive
 sessions, terminate sessions, or create replacements for missing observations.
+Optional GitHub App comments notify input/approval waits; continuation stays in
+Devin. See [local session operations](session-operations.md) for exceptional
+reconciliation and ownership release, which never stops remote execution.
 
 ## Submission and provider state
 
@@ -56,8 +59,10 @@ Reconciliation runs before new submission claims. Observed active work, unknown
 activity, submitting jobs, and live observation leases count toward local
 capacity. Retained inactive jobs do not reserve slots merely because they become
 due. Lookup misses and HTTP errors release the observation lease and retain the
-snapshot, outputs, and identity. Abandoned leases expire. No remote execution
-timeout is inferred from `DEVIN_SUBMITTING_TIMEOUT_SECONDS`.
+snapshot, outputs, and identity. Durable failure evidence drives bounded backoff
+and escalation after three consecutive failures; uncertainty does not release
+capacity. Abandoned leases expire. No remote execution timeout is inferred from
+`DEVIN_SUBMITTING_TIMEOUT_SECONDS`.
 
 A session resumed in the Devin UI becomes active under the same identity when
 next observed. It then counts against capacity before new claims. This is a
@@ -91,7 +96,7 @@ local advisory at 30 days from remote creation. Unknown creation returns null.
 The calculation uses testable Effect time where called. It is not an API
 `expired` status or a claim about exact provider expiry enforcement. Age alone
 never closes a session, including actively working sessions. Retained tracking
-continues until an archive is observed.
+continues until an archive is observed or an operator releases local ownership.
 
 Observed raw completion enables independent best-effort insights collection,
 including an already archived completed session. Available analysis is retained
@@ -113,8 +118,10 @@ code; this migration does not rewrite their meaning.
 Legacy running or succeeded records without remote IDs are quarantined locally
 as `submitting` with `recovery_blocked=true`. They retain history, consume
 capacity, and cannot automatically resubmit. They require operator investigation
-and explicit association outside this passive workflow. Genuine local failures
-without remote IDs remain failed.
+and verified association or local resolution through the administration CLI.
+Genuine local failures without remote IDs remain failed. The later recovery
+migration also quarantines old pending, unassociated rows with at least two
+empty recovery checks; no number of empty lists now permits a replacement POST.
 
 SQLite may report lock contention between workers. The orchestration loop
 retries failed ticks; uncertain submissions enter delivery-tag recovery rather

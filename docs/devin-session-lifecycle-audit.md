@@ -3,9 +3,47 @@
 Reviewed on 2026-09-13 UTC against `main` at
 `92914d48ad8afa4497dda6a364642ef5261322cb`.
 
-**Implementation addendum.** Finding 2 now records the implemented GitHub App
-notification flow and its local verification. Other findings, tables, and the
-original verification section remain historical audit evidence.
+## Current implementation addendum (2026-09-14)
+
+The audit below describes the original reviewed revision; its old source line
+numbers, gap statements, and verification results are historical, except for the
+previously updated Finding 2. Current implementation and local evidence:
+
+- **Lifecycle and budgets (Findings 1/4):** `interpretSession` distinguishes
+  waits, pauses, intervention, completion, and archive state. The repository
+  retains same-identity observation and changed output history independently of
+  submission and analysis. New issue sessions receive a configurable ACU cap;
+  nullable consumed ACUs preserve unknown usage. Local resolution is not remote
+  termination or a spending stop. See
+  [passive tracking](passive-devin-lifecycle.md) and
+  [budget policy](devin-session-budget.md).
+- **Recovery and operations (Finding 3):** repeated lookup failures now retain
+  durable counts/times, bounded backoff, escalation, and uncertain capacity.
+  Ambiguous creation never retries POST after empty lists. Verified immutable
+  association and local release/resume use snapshot revisions and live-lease
+  fences; private administrative events retain the decision evidence. The
+  credential-independent offline CLI and classified single-session diagnostic
+  GET are documented in [session operations](session-operations.md).
+- **Integration evidence:** `src/session-recovery.test.ts` covers durable
+  recovery and the expired failure-writer regression (time is read after DB
+  acquisition). `src/devin-diagnostic.test.ts` separates malformed JSON/schema
+  responses from transport/timeout failures.
+  `src/session-administration.test.ts` and
+  `src/session-recovery-notification.test.ts` cover ownership/CAS and real
+  notifier receipt reconciliation without reposting after local release.
+  Populated migration tests cover the linear ACU/generation → recovery upgrade,
+  old-value preservation, replay, foreign keys, and legacy quarantine.
+  `src/recollect-insights.test.ts` retains generation-CAS and independent
+  analysis behavior. All use temporary SQLite and synthetic/mocked provider
+  traffic. `src/compose-config.test.ts` provides isolated actual Compose
+  rendering checks; this is not image-build or deployment evidence.
+
+**Still unverified:** live-provider list completeness/visibility, exact expiry
+and transition guarantees, and exactly-once remote creation/comment delivery.
+Polling cannot replay unseen intermediate transitions. No remote message,
+approval, archive, or terminate operation was added. Operators must manage any
+continuing remote execution separately. These local tests do not establish
+provider guarantees or failure-free cross-process contention.
 
 ## Summary
 

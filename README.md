@@ -204,13 +204,17 @@ sequenceDiagram
 ```
 
 The durable queue survives restarts. Transient submission failures retry within
-an attempt limit; uncertain submissions are checked by delivery tag before
-retrying. Local submission status is separate from provider lifecycle and
-whether the bug was fixed. The structured remediation output captures Devin's
-work: `fix_proposed` means a new fix was implemented, verified, and submitted as
-a PR, not that it was merged. Routine review and merge belong in `next_action`,
-not `blocker`. `needs_human` means implementation or verification needs human
-input or a decision, or a security issue needs escalation.
+an attempt limit only after definite pre-creation failures. Uncertain creates
+retain ownership and use delivery-tag recovery; no number of empty lists permits
+another session POST. Repeated misses escalate for operator reconciliation. Use
+the [local session administration CLI](docs/session-operations.md) to inspect,
+diagnose, associate, or release local ownership without remote control writes.
+Local submission status is separate from provider lifecycle and whether the bug
+was fixed. The structured remediation output captures Devin's work:
+`fix_proposed` means a new fix was implemented, verified, and submitted as a PR,
+not that it was merged. Routine review and merge belong in `next_action`, not
+`blocker`. `needs_human` means implementation or verification needs human input
+or a decision, or a security issue needs escalation.
 
 `devin_sessions.outputs` is an ordered JSON array, defaulting to `[]`. Each
 recorded result is appended without replacing earlier results. Existing database

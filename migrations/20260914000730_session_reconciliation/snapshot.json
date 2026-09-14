@@ -3,7 +3,7 @@
   "dialect": "sqlite",
   "id": "f99946dc-536d-44b6-a52f-75e3ebeee429",
   "prevIds": [
-    "2dedaa49-8abb-4db2-9876-bfe6e2e87915"
+    "0880cc91-2927-4f3d-b3b9-1b177edc13b5"
   ],
   "ddl": [
     {
@@ -1144,6 +1144,26 @@
       "name": "github_notification_singleton",
       "entityType": "checks",
       "table": "github_notification_gate"
+    },
+    {
+      "type": "real",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "acus_consumed",
+      "entityType": "columns",
+      "table": "devin_sessions"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "analysis_generation",
+      "entityType": "columns",
+      "table": "devin_sessions"
     }
   ],
   "renames": []

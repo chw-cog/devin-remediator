@@ -8,6 +8,8 @@ import {
   DevinSessionRepository,
   type SessionRecord,
 } from "../src/devin-session-repository.ts";
+import { GitHubClient } from "../src/github.ts";
+import { GitHubCommentNotifier } from "../src/github-comment-notifier.ts";
 import { SessionAdministration } from "../src/session-administration.ts";
 import { devinSessions, githubWebhookDeliveries } from "../src/schemas.ts";
 import { WebhookEventProcessors } from "../src/webhook-event-processors.ts";
@@ -60,6 +62,8 @@ export const seedRecovery = Effect.fnUntraced(
 export function recoveryLayer(path: string, maxSessions = 1) {
   return DevinSessionOrchestrator.layer.pipe(
     Layer.provide(WebhookEventProcessors.layer),
+    Layer.provide(GitHubCommentNotifier.layer),
+    Layer.provide(GitHubClient.layer),
     Layer.provideMerge(DevinSessionRepository.layer),
     Layer.provideMerge(SessionAdministration.layer()),
     Layer.provideMerge(DatabaseClient.layerWithPath(path)),

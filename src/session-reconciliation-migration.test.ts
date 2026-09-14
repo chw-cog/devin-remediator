@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { createClient } from "@libsql/client";
 import { LibsqlClient } from "@effect/sql-libsql";
 import * as Drizzle from "drizzle-orm/effect-libsql";
@@ -15,7 +16,7 @@ import {
 } from "../test/session-recovery-fixtures.ts";
 import { Reactivity } from "effect/unstable/reactivity";
 
-Deno.test("session_reconciliation migrates populated baseline independently with foreign keys and immutable evidence intact", async () => {
+Deno.test("ACU/generation then session_reconciliation migrate populated baseline with foreign keys and immutable evidence intact", async () => {
   const directory = await Deno.makeTempDir();
   const client = createClient({ url: `file:${directory}/baseline.sqlite` });
   try {
@@ -59,6 +60,22 @@ Deno.test("session_reconciliation migrates populated baseline independently with
         const migrationsFolder = fileURLToPath(
           new URL("../migrations", import.meta.url),
         );
+        // Exercise the cumulative upgrade with populated ACU/generation values
+        // before recovery runs, rather than only testing their defaults.
+        yield* Effect.promise(async () => {
+          const name = "20260914000253_session_acus_analysis_generation";
+          await Deno.mkdir(`${directory}/${name}`);
+          await Deno.copyFile(
+            new URL(`../migrations/${name}/migration.sql`, import.meta.url),
+            `${directory}/${name}/migration.sql`,
+          );
+        });
+        yield* migrate(db, { migrationsFolder: directory });
+        assert.deepEqual(
+          (yield* sql`SELECT * FROM devin_sessions WHERE id = 'one'`)[0],
+          { ...before, acus_consumed: null, analysis_generation: 0 },
+        );
+        yield* sql`UPDATE devin_sessions SET acus_consumed = 3.625, analysis_generation = 4 WHERE id = 'one'`;
         yield* migrate(db, { migrationsFolder });
         const [after] =
           yield* sql`SELECT * FROM devin_sessions WHERE id = 'one'`;
@@ -68,6 +85,8 @@ Deno.test("session_reconciliation migrates populated baseline independently with
           ),
           before,
         );
+        assert.equal(after.acus_consumed, 3.625);
+        assert.equal(after.analysis_generation, 4);
         assert.equal(after.local_ownership, "tracking");
         assert.equal(after.lookup_failure_count, 0);
         assert.equal(after.recovery_candidate_ids, "[]");
@@ -80,6 +99,8 @@ Deno.test("session_reconciliation migrates populated baseline independently with
         const upgraded = yield* sql`SELECT * FROM devin_sessions ORDER BY id`;
         const [quarantined] =
           yield* sql`SELECT * FROM devin_sessions WHERE id = 'ambiguous'`;
+        assert.equal(quarantined.acus_consumed, null);
+        assert.equal(quarantined.analysis_generation, 0);
         assert.equal(quarantined.status, "submitting");
         assert.equal(quarantined.recovery_blocked, 1);
         assert.ok(quarantined.reconciliation_escalated_at);
@@ -140,5 +161,27 @@ Deno.test("session_reconciliation migrates populated baseline independently with
   } finally {
     client.close();
     await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("session_reconciliation snapshot follows and retains the complete ACU/generation snapshot", async () => {
+  const readSnapshot = async (name: string) =>
+    JSON.parse(
+      await Deno.readTextFile(
+        new URL(`../migrations/${name}/snapshot.json`, import.meta.url),
+      ),
+    );
+  const previous = await readSnapshot(
+    "20260914000253_session_acus_analysis_generation",
+  );
+  const recovery = await readSnapshot("20260914000730_session_reconciliation");
+  assert.deepEqual(recovery.prevIds, [previous.id]);
+  for (const entry of previous.ddl) {
+    assert.ok(
+      recovery.ddl.some((candidate: unknown) =>
+        isDeepStrictEqual(candidate, entry)
+      ),
+      `Recovery snapshot must retain ${entry.entityType} ${entry.name}`,
+    );
   }
 });

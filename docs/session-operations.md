@@ -160,8 +160,10 @@ migration: additive columns plus a private administrative audit table/index. It
 does not rebuild `devin_sessions`, rewrite shipped migrations, change existing
 identity uniqueness, or alter outputs/analysis. A populated baseline upgrade
 test preserves attention receipts, provider evidence, and foreign keys;
-reapplying migrations is idempotent. The integration writer must reconcile
-Drizzle snapshot ancestry if other lanes add migrations.
+reapplying migrations is idempotent. Snapshot ancestry is cumulative and linear:
+ACU/analysis-generation migration first, then recovery. Combined populated
+upgrade tests preserve fractional ACUs, nonzero analysis generations,
+notification ownership, quarantine evidence, and old values independently.
 
 The shared `DatabaseClient.layerWithPath` prerequisite is reused for local-only
 operations. `DevinClient.layerWithCredentials` constructs the same client
@@ -179,8 +181,9 @@ They cover bounded misses, duplicate candidates, diagnostic classifications,
 restart, verified immutable association, local release/resume, unique ownership
 races, submission/observation/analysis/notification CAS, disabled notifications,
 actual CLI argument execution, and populated baseline upgrade. No live provider
-or remote control calls were made. Graph regeneration is deferred to
-integration.
+or remote control calls were made. The combined-main integration also checks
+actual Compose rendering with isolated synthetic environments, not a live daemon
+or provider deployment.
 
 ### Upgrade quarantine
 

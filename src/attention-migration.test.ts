@@ -59,19 +59,7 @@ Deno.test("attention upgrade backfills both current waits once without changing 
         yield* migrate(db, { migrationsFolder });
         assert.deepEqual(
           yield* sql`SELECT * FROM devin_sessions ORDER BY id`,
-          before.map((row) => ({
-            ...row,
-            local_ownership: "tracking",
-            admin_version: 0,
-            lookup_failure_count: 0,
-            lookup_failure_streak: 0,
-            first_lookup_failure_at: null,
-            last_lookup_failure_at: null,
-            last_lookup_failure: null,
-            reconciliation_escalated_at: null,
-            next_recovery_at: "1970-01-01T00:00:00.000Z",
-            recovery_candidate_ids: "[]",
-          })),
+          before,
         );
         const episodes =
           yield* sql`SELECT * FROM attention_notifications ORDER BY session_record_id`;

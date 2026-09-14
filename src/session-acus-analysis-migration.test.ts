@@ -63,6 +63,16 @@ Deno.test("session ACU/generation upgrade preserves baseline rows and collected 
             ...row,
             acus_consumed: null,
             analysis_generation: 0,
+            local_ownership: "tracking",
+            admin_version: 0,
+            lookup_failure_count: 0,
+            lookup_failure_streak: 0,
+            first_lookup_failure_at: null,
+            last_lookup_failure_at: null,
+            last_lookup_failure: null,
+            reconciliation_escalated_at: null,
+            next_recovery_at: "1970-01-01T00:00:00.000Z",
+            recovery_candidate_ids: "[]",
           })),
         );
         assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
