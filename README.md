@@ -59,9 +59,17 @@ are unverified.
 1. Expose `https://<your-host>/api/v1/webhook` through HTTPS.
 2. Configure a repository webhook with `application/json`, **Issues** events,
    and the same webhook secret. A GitHub App webhook can replace this webhook.
-3. Add the exact lowercase `devin` label to a suitable issue.
-4. Follow `webhook.queued` and `Devin session created` in logs, then inspect
+3. Create the exact lowercase `devin` and `need-human` labels in the target
+   repository.
+4. Add `devin` to a suitable issue.
+5. Follow `webhook.queued` and `Devin session created` in logs, then inspect
    Devin. A 200 response acknowledges durable intake, not a completed fix.
+
+The playbook instructs Devin to apply `need-human` when it needs human input or
+leaves work incomplete, including when its session budget runs low. It updates
+the progress comment with the blocker and next action. Ensure Devin's repository
+access permits adding labels and editing its comments. Adding `need-human` does
+not trigger a session.
 
 The exact raw body is HMAC-verified. Invalid signatures return constant 401
 responses; malformed requests return 400. Persistence or unexpected defects
