@@ -4,6 +4,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -46,6 +47,7 @@ export const devinSessions = sqliteTable("devin_sessions", {
   isArchived: integer("is_archived", { mode: "boolean" }),
   providerCreatedAt: integer("provider_created_at"),
   providerUpdatedAt: integer("provider_updated_at"),
+  acusConsumed: real("acus_consumed"),
   sessionUrl: text("session_url"),
   lastObservedAt: text("last_observed_at"),
   nextObservationAt: text("next_observation_at").notNull()
@@ -60,6 +62,7 @@ export const devinSessions = sqliteTable("devin_sessions", {
     enum: ["pending", "collected", "unavailable"],
   }).notNull().default("pending"),
   analysisAttempts: integer("analysis_attempts").notNull().default(0),
+  analysisGeneration: integer("analysis_generation").notNull().default(0),
   analysisNextAttemptAt: text("analysis_next_attempt_at").notNull()
     .default("1970-01-01T00:00:00.000Z"),
   analysisReason: text("analysis_reason"),

@@ -486,6 +486,8 @@ for (const includeOutcomeMigration of [false, true]) {
               is_archived: null,
               provider_created_at: null,
               provider_updated_at: null,
+              acus_consumed: null,
+              analysis_generation: 0,
               session_url: null,
               last_observed_at: null,
               next_observation_at: "1970-01-01T00:00:00.000Z",

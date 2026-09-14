@@ -1,5 +1,4 @@
 import { strict as assert } from "node:assert";
-import { fileURLToPath } from "node:url";
 import { createClient } from "@libsql/client";
 import { LibsqlClient } from "@effect/sql-libsql";
 import * as Drizzle from "drizzle-orm/effect-libsql";
@@ -47,9 +46,16 @@ Deno.test("attention upgrade backfills both current waits once without changing 
           yield* sql`INSERT INTO devin_sessions (id, github_delivery_id, status, provider_lifecycle, active_work, devin_session_id, session_url, outputs, pr_number, analysis, analysis_status, inserted_at, updated_at) VALUES (${id}, ${id}, 'submitted', ${lifecycle}, 0, ${id}, ${`https://app.devin.ai/sessions/${id}`}, '[{"outcome":"needs_human","summary":"PRIVATE retained"}]', 8, '{"retained":true}', 'collected', 'old', 'old')`;
         }
         const before = yield* sql`SELECT * FROM devin_sessions ORDER BY id`;
-        const migrationsFolder = fileURLToPath(
-          new URL("../migrations", import.meta.url),
-        );
+        // Isolate this upgrade from later additive session migrations.
+        const migrationsFolder = folder;
+        yield* Effect.promise(async () => {
+          const name = "20260913224511_remarkable_demogoblin";
+          await Deno.mkdir(`${folder}/${name}`);
+          await Deno.copyFile(
+            new URL(`../migrations/${name}/migration.sql`, import.meta.url),
+            `${folder}/${name}/migration.sql`,
+          );
+        });
         yield* migrate(db, { migrationsFolder });
         assert.deepEqual(
           yield* sql`SELECT * FROM devin_sessions ORDER BY id`,

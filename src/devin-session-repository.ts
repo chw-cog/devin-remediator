@@ -330,6 +330,7 @@ export class DevinSessionRepository extends Context.Service<
           isArchived,
           providerCreatedAt: remote.created_at,
           providerUpdatedAt: remote.updated_at,
+          acusConsumed: remote.acus_consumed,
           sessionUrl: remote.url,
           lastObservedAt: DateTime.formatIso(now),
           nextObservationAt: nextObservationAt(state.status, now),
@@ -739,6 +740,7 @@ export class DevinSessionRepository extends Context.Service<
             eq(devinSessions.devinSessionId, claim.devinSessionId),
             eq(devinSessions.analysisStatus, "pending"),
             eq(devinSessions.analysisAttempts, claim.analysisAttempts),
+            eq(devinSessions.analysisGeneration, claim.analysisGeneration),
           ));
         },
         Effect.mapError(databaseError),
