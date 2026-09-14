@@ -22,10 +22,15 @@ self.onmessage = async (event) => {
       runtime = makeRuntime(event.data.env);
       await runtime.runPromise(DatabaseClient);
       self.postMessage({ ready: true });
-    } else if (event.data.action === "claim" && runtime !== undefined) {
+    } else if (
+      (event.data.action === "claim" || event.data.action === "claimPending") &&
+      runtime !== undefined
+    ) {
       const claims = await runtime.runPromise(
         DevinSessionRepository.use((repository) =>
-          repository.claimDueObservations()
+          event.data.action === "claimPending"
+            ? repository.claimPending
+            : repository.claimDueObservations()
         ),
       );
       self.postMessage({ claims });

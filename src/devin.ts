@@ -1,6 +1,7 @@
 import {
   type Cause,
   Context,
+  DateTime,
   Effect,
   flow,
   Layer,
@@ -252,6 +253,7 @@ export class DevinSubmissionError extends Schema.TaggedError<
 >()("DevinSubmissionError", {
   disposition: Schema.Literals(["retryable", "permanent", "ambiguous"]),
   httpStatus: Schema.optional(Schema.Int),
+  retryAt: Schema.optional(Schema.String),
 }) {}
 
 function submissionError(
@@ -260,6 +262,7 @@ function submissionError(
     | HttpClientError.HttpClientError
     | Schema.SchemaError
     | { readonly _tag: "TimeoutError" },
+  now: DateTime.Utc,
 ): DevinSubmissionError {
   if (error._tag === "HttpBodyError") {
     return new DevinSubmissionError({ disposition: "permanent" });
@@ -269,8 +272,27 @@ function submissionError(
     error.reason._tag === "StatusCodeError"
   ) {
     const httpStatus = error.reason.response.status;
+    const header = error.reason.response.headers["retry-after"]?.trim();
+    let retryAt: string | undefined;
+    if (httpStatus === 429 && header) {
+      const seconds = /^\d+$/.test(header) ? Number(header) : NaN;
+      const deadline = Number.isSafeInteger(seconds)
+        ? DateTime.make(DateTime.toEpochMillis(now) + seconds * 1000)
+        : /^(?:[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT|[A-Z][a-z]+, \d{2}-[A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2} GMT|[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/
+            .test(header)
+        ? DateTime.make(header)
+        : Option.none();
+      if (
+        Option.isSome(deadline) &&
+        DateTime.toEpochMillis(deadline.value) >= 0 &&
+        DateTime.toEpochMillis(deadline.value) <= 253402300799999
+      ) {
+        retryAt = DateTime.formatIso(deadline.value);
+      }
+    }
     return new DevinSubmissionError({
       httpStatus,
+      ...(retryAt === undefined ? {} : { retryAt }),
       disposition: httpStatus === 429
         ? "retryable"
         : httpStatus === 408 || httpStatus >= 500
@@ -429,7 +451,13 @@ export class DevinClient extends Context.Service<DevinClient, {
             Effect.flatMap(client.execute),
             Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinPlaybook)),
             Effect.timeout("30 seconds"),
-            Effect.mapError(submissionError),
+            Effect.catch((error) =>
+              DateTime.now.pipe(
+                Effect.flatMap((now) =>
+                  Effect.fail(submissionError(error, now))
+                ),
+              )
+            ),
           ),
         observeClient("createPlaybook"),
       );
@@ -445,7 +473,13 @@ export class DevinClient extends Context.Service<DevinClient, {
             Effect.flatMap(client.execute),
             Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinPlaybook)),
             Effect.timeout("30 seconds"),
-            Effect.mapError(submissionError),
+            Effect.catch((error) =>
+              DateTime.now.pipe(
+                Effect.flatMap((now) =>
+                  Effect.fail(submissionError(error, now))
+                ),
+              )
+            ),
             Effect.flatMap((playbook) =>
               playbook.playbook_id === playbookId
                 ? Effect.succeed(playbook)
@@ -470,7 +504,13 @@ export class DevinClient extends Context.Service<DevinClient, {
               },
             }).pipe(
               Effect.flatMap(HttpClientResponse.schemaBodyJson(PlaybookPage)),
-              Effect.mapError(submissionError),
+              Effect.catch((error) =>
+                DateTime.now.pipe(
+                  Effect.flatMap((now) =>
+                    Effect.fail(submissionError(error, now))
+                  ),
+                )
+              ),
             );
             for (const playbook of page.items) {
               if (playbook.macro !== macro) continue;
@@ -507,7 +547,13 @@ export class DevinClient extends Context.Service<DevinClient, {
             Effect.flatMap(client.execute),
             Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinSession)),
             Effect.timeout("30 seconds"),
-            Effect.mapError(submissionError),
+            Effect.catch((error) =>
+              DateTime.now.pipe(
+                Effect.flatMap((now) =>
+                  Effect.fail(submissionError(error, now))
+                ),
+              )
+            ),
           ),
         observeClient("createSession"),
         (effect, params) =>

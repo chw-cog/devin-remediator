@@ -52,6 +52,18 @@ export const createApp = Effect.gen(function* () {
           return c.body(null, 200);
         }).pipe(
           Effect.catchTag(
+            "WebhookAuthenticationError",
+            () =>
+              Effect.succeed(
+                c.json({ error: "Invalid webhook signature" }, 401),
+              ),
+          ),
+          Effect.catchTag(
+            "WebhookPayloadError",
+            () =>
+              Effect.succeed(c.json({ error: "Invalid webhook payload" }, 400)),
+          ),
+          Effect.catchTag(
             "WebhookDeliveryHandlerError",
             () =>
               Effect.succeed(c.json({ error: "Webhook handling failed" }, 500)),

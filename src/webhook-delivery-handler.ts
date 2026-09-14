@@ -1,9 +1,15 @@
 import { Webhooks } from "@octokit/webhooks";
 import { Context, DateTime, Effect, Layer, Schema } from "effect";
 import { AppConfig } from "./config.ts";
+import { and, eq } from "drizzle-orm";
+import { issueIdentity } from "./issue-admission.ts";
 import { DatabaseClient } from "./database.ts";
 import { errorFields, observe } from "./logging.ts";
-import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
+import {
+  devinSessions,
+  githubWebhookDeliveries,
+  issueAdmissions,
+} from "./schemas.ts";
 
 type WebhookDelivery = {
   id: string;
@@ -16,6 +22,18 @@ export class WebhookDeliveryHandlerError
   extends Schema.TaggedError<WebhookDeliveryHandlerError>()(
     "WebhookDeliveryHandlerError",
     { cause: Schema.Defect() },
+  ) {}
+
+export class WebhookAuthenticationError
+  extends Schema.TaggedError<WebhookAuthenticationError>()(
+    "WebhookAuthenticationError",
+    {},
+  ) {}
+
+export class WebhookPayloadError
+  extends Schema.TaggedError<WebhookPayloadError>()(
+    "WebhookPayloadError",
+    {},
   ) {}
 
 const decodePayload = Schema.decodeUnknownEffect(
@@ -31,7 +49,12 @@ export class WebhookDeliveryHandler
   extends Context.Service<WebhookDeliveryHandler, {
     readonly receive: (
       event: WebhookDelivery,
-    ) => Effect.Effect<void, WebhookDeliveryHandlerError>;
+    ) => Effect.Effect<
+      void,
+      | WebhookDeliveryHandlerError
+      | WebhookAuthenticationError
+      | WebhookPayloadError
+    >;
   }>()("devin-remediator/WebhookDeliveryHandler") {
   static readonly layer = Layer.effect(
     WebhookDeliveryHandler,
@@ -42,33 +65,36 @@ export class WebhookDeliveryHandler
 
       const receive = Effect.fn("WebhookDeliveryHandler.receive")(
         function* (event: WebhookDelivery) {
-          const verified = yield* Effect.tryPromise({
-            try: () => webhooks.verify(event.payload, event.signature),
-            catch: (cause) => new WebhookDeliveryHandlerError({ cause }),
-          }).pipe(
-            Effect.tapError(() =>
-              Effect.logWarning("webhook.verification_failed")
-            ),
-          );
+          const verified = /^sha256=[a-f0-9]{64}$/.test(event.signature) &&
+            (yield* Effect.tryPromise({
+              try: () => webhooks.verify(event.payload, event.signature),
+              catch: (cause) => new WebhookDeliveryHandlerError({ cause }),
+            }).pipe(
+              Effect.tapError(() =>
+                Effect.logWarning("webhook.verification_failed")
+              ),
+            ));
           if (!verified) {
             yield* Effect.logWarning("webhook.signature_rejected");
-            return yield* new WebhookDeliveryHandlerError({
-              cause: new Error("Invalid webhook signature"),
-            });
+            return yield* new WebhookAuthenticationError({});
           }
 
           const payload = yield* decodePayload(event.payload).pipe(
             Effect.tapError(() =>
               Effect.logWarning("webhook.payload_rejected")
             ),
-            Effect.mapError((cause) =>
-              new WebhookDeliveryHandlerError({ cause })
-            ),
+            Effect.mapError(() => new WebhookPayloadError({})),
           );
           const insertedAt = DateTime.formatIso(yield* DateTime.now);
 
           const sessionRecordId = crypto.randomUUID();
-          const queued = yield* db.transaction((tx) =>
+          const identity = issueIdentity({
+            eventName: event.name,
+            repo: payload.repository.full_name,
+            issueNumber: payload.issue?.number,
+            payload: event.payload,
+          });
+          const outcome = yield* db.transaction((tx) =>
             Effect.gen(function* () {
               const inserted = yield* tx.insert(githubWebhookDeliveries).values(
                 {
@@ -84,7 +110,15 @@ export class WebhookDeliveryHandler
                 target: githubWebhookDeliveries.deliveryId,
               }).returning({ id: githubWebhookDeliveries.id });
 
-              if (inserted.length === 0) return false;
+              if (inserted.length === 0) return "duplicate";
+              if (identity === null) return "ignored";
+              const [existing] = yield* tx.select().from(issueAdmissions).where(
+                and(
+                  eq(issueAdmissions.repo, identity.repo),
+                  eq(issueAdmissions.issueNumber, identity.issueNumber),
+                ),
+              );
+              if (existing) return "duplicate";
 
               yield* tx.insert(devinSessions).values({
                 id: sessionRecordId,
@@ -93,7 +127,11 @@ export class WebhookDeliveryHandler
                 insertedAt,
                 updatedAt: insertedAt,
               }).run();
-              return true;
+              yield* tx.insert(issueAdmissions).values({
+                ...identity,
+                canonicalSessionId: sessionRecordId,
+              });
+              return "queued";
             })
           ).pipe(
             Effect.tapError((error) =>
@@ -105,12 +143,12 @@ export class WebhookDeliveryHandler
               new WebhookDeliveryHandlerError({ cause })
             ),
           );
-          yield* Effect.logInfo(queued ? "webhook.queued" : "webhook.duplicate")
+          yield* Effect.logInfo(`webhook.${outcome}`)
             .pipe(
               Effect.annotateLogs({
                 repo: payload.repository.full_name,
                 issue_number: payload.issue?.number ?? null,
-                ...(queued
+                ...(outcome === "queued"
                   ? { session_record_id: sessionRecordId, status: "pending" }
                   : {}),
               }),

@@ -90,12 +90,12 @@ try {
   );
   assert.equal(
     await fallback.locator("#refresh").getAttribute("href"),
-    "/dashboard",
+    "/dashboard?page=1",
   );
   assert.deepEqual(
     await fallback.locator(".usage .metric-name").allTextContents(),
     [
-      "Total observed usage",
+      "Provider-reported usage",
       "Average per session",
       "Median time until fix proposed",
       "Median time until merged",
@@ -125,7 +125,7 @@ try {
   let mode = "ok";
   let calls = 0;
   let release;
-  await page.route("**/api/v1/metrics", async (route) => {
+  await page.route("**/api/v1/metrics?*", async (route) => {
     calls++;
     if (mode === "hold") {
       await new Promise((resolve) => {
@@ -321,8 +321,130 @@ try {
     "expired authentication must stop polling",
   );
   assert.deepEqual(errors, []);
+  const pagination = await browser.newContext({ httpCredentials: credentials });
+  const paged = await pagination.newPage();
+  paged.on("pageerror", (error) => errors.push(error.message));
+  await paged.clock.install();
+  for (const count of [0, 1, 3, 4, 7]) {
+    assert.equal(
+      (await pagination.request.post(`${base}/__fixture/count/${count}`))
+        .status(),
+      204,
+    );
+    await paged.goto(`${base}/dashboard`);
+    const pages = Math.max(1, Math.ceil(count / 3));
+    const totals = await paged.locator(".metric-value").allTextContents();
+    const ids = [];
+    for (let number = 1; number <= pages; number++) {
+      assert.equal(
+        await paged.locator(".session").count(),
+        Math.min(3, count - (number - 1) * 3),
+      );
+      assert.match(
+        await paged.locator("#page-feedback").textContent(),
+        new RegExp(`Page ${number} of ${pages}`),
+      );
+      assert.equal(
+        await paged.locator("#previous-page").getAttribute("aria-disabled"),
+        number === 1 ? "true" : null,
+      );
+      assert.equal(
+        await paged.locator("#next-page").getAttribute("aria-disabled"),
+        number === pages ? "true" : null,
+      );
+      ids.push(
+        ...await paged.locator(".session").evaluateAll((cards) =>
+          cards.map((card) => card.dataset.sessionId)
+        ),
+      );
+      assert.deepEqual(
+        await paged.locator(".metric-value").allTextContents(),
+        totals,
+      );
+      for (const width of [320, 390, 768, 1440]) {
+        await paged.setViewportSize({ width, height: 900 });
+        assert.equal(
+          await paged.evaluate(() =>
+            document.documentElement.scrollWidth > innerWidth
+          ),
+          false,
+          `count ${count}, page ${number}, width ${width}`,
+        );
+      }
+      if (number < pages) await paged.locator("#next-page").click();
+    }
+    assert.deepEqual(
+      ids,
+      Array.from({ length: count }, (_, index) => `demo-${index + 1}`),
+    );
+    if (pages > 1) {
+      await paged.locator("#previous-page").click();
+      assert.match(
+        await paged.locator("#page-feedback").textContent(),
+        new RegExp(`Page ${pages - 1} of ${pages}`),
+      );
+    }
+  }
+  const noScriptPages = await browser.newContext({
+    javaScriptEnabled: false,
+    httpCredentials: credentials,
+  });
+  const fallbackPages = await noScriptPages.newPage();
+  await fallbackPages.goto(`${base}/dashboard?page=2`);
+  assert.equal(
+    await fallbackPages.locator(".session").first().getAttribute(
+      "data-session-id",
+    ),
+    "demo-4",
+  );
+  await fallbackPages.locator("#next-page").click();
+  assert.equal(await fallbackPages.locator(".session").count(), 1);
+  await fallbackPages.locator("#previous-page").click();
+  await fallbackPages.locator("#refresh").click();
+  assert.match(fallbackPages.url(), /page=2$/);
+  await noScriptPages.close();
+  await paged.goto(`${base}/dashboard?page=3`);
+  await paged.locator("details").evaluate((details) => {
+    details.open = true;
+  });
+  await paged.clock.runFor(30_001);
+  await paged.waitForFunction(() =>
+    document.querySelector("#refresh-status").textContent.startsWith("Live")
+  );
+  assert.match(paged.url(), /page=3$/);
+  assert.equal(
+    await paged.locator(".session").first().getAttribute("data-session-id"),
+    "demo-7",
+  );
+  await pagination.request.post(`${base}/__fixture/count/1`);
+  await paged.locator("#refresh").click();
+  await paged.waitForFunction(() =>
+    document.querySelector("#page-feedback").textContent.includes("Page 1 of 1")
+  );
+  assert.match(paged.url(), /page=1$/);
+  assert.equal(await paged.locator("details").getAttribute("open"), "");
+  assert.equal(await paged.locator("#next-page").getAttribute("href"), null);
+  assert.equal(
+    await paged.locator("#metrics-json").getAttribute("href"),
+    "/api/v1/metrics?page=1",
+  );
+  const intact = await paged.locator("#page-feedback").textContent();
+  await paged.route("**/api/v1/metrics?*", async (route) => {
+    const invalid = structuredClone(initial);
+    invalid.activePage = { number: 0, pageCount: 1, size: 3 };
+    await route.fulfill({ json: invalid });
+  });
+  await paged.locator("#refresh").click();
+  await paged.waitForFunction(() =>
+    document.querySelector("#refresh-status").textContent.includes(
+      "last successful snapshot",
+    )
+  );
+  assert.equal(await paged.locator("#page-feedback").textContent(), intact);
+  assert.equal(await paged.locator(".session").count(), 1);
+  assert.deepEqual(errors, []);
   console.log(
-    "PASS: live HTTP auth, SSR without JavaScript, milestone values/order/sample counts, automatic/manual refresh, safe DOM updates, stale/partial/empty states, no overlapping requests, hidden-tab pause/resume, focus/details preservation, mobile layout, and expired-login handling.",
+    "PASS: live HTTP auth, 0/1/3/4/7 current sessions, page boundaries, no-JS previous/next/refresh, refresh retention and shrink clamping, invalid metadata rejection, unchanged global totals, milestone values/order/sample counts, automatic/manual refresh, safe DOM updates, stale/partial/empty states, no overlapping requests, hidden-tab pause/resume, focus/details preservation, 320px+ layout, and expired-login handling.",
   );
 } finally {
   await browser?.close();

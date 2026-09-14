@@ -161,7 +161,11 @@ Deno.test("JSON logs correlate concurrent requests through queue, processor, cli
       for (
         const [index, id] of ["delivery-issues", "delivery-push"].entries()
       ) {
-        const queued = findLog(logs, "webhook.queued", id);
+        const queued = findLog(
+          logs,
+          index === 0 ? "webhook.queued" : "webhook.ignored",
+          id,
+        );
         assert.equal(queued.annotations.request_id, requestIds[index]);
         assert.equal(queued.annotations.component, "WebhookDeliveryHandler");
         assert.equal(queued.annotations.repo, "owner/repo");
@@ -173,26 +177,13 @@ Deno.test("JSON logs correlate concurrent requests through queue, processor, cli
       }
 
       yield* orchestra.tick;
-      const missing = findLog(
-        logs,
-        "webhook.processor_missing",
-        "delivery-push",
-      );
-      assert.equal(missing.level, "DEBUG");
-      assert.equal(missing.annotations.github_event, "push");
-      assert.equal(missing.annotations.component, "DevinSessionOrchestrator");
-      assert.equal(missing.annotations.operation, "submit");
-      assert.equal(missing.annotations.repo, "owner/repo");
-      assert.equal(missing.annotations.issue_number, 42);
-      assert.equal(missing.annotations.attempt, 1);
-      assert.equal(missing.annotations.claim_version, 1);
       assert.equal(
-        missing.annotations.session_record_id,
-        findLog(logs, "webhook.queued", "delivery-push").annotations
-          .session_record_id,
+        logs.some((log) =>
+          log.annotations.github_delivery_id === "delivery-push" &&
+          log.annotations.component === "DevinSessionOrchestrator"
+        ),
+        false,
       );
-      assert.equal(typeof missing.annotations.tick_id, "string");
-      assert.equal(missing.annotations.request_id, undefined);
 
       const submitted = findLog(
         logs,
@@ -271,7 +262,7 @@ Deno.test("redelivery, invalid signature, and malformed JSON have diagnostic log
           body,
         })
       );
-      assert.equal(rejected.status, 500);
+      assert.equal(rejected.status, 401);
       assert.equal(findLog(logs, "webhook.signature_rejected").level, "WARN");
       const invalid = yield* Effect.promise(async () =>
         await app.request("/api/v1/webhook", { method: "POST", body: "{" })

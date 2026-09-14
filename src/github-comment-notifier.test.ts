@@ -27,6 +27,7 @@ import {
   devinSessions,
   githubNotificationGate as gate,
   githubWebhookDeliveries,
+  issueAdmissions,
 } from "./schemas.ts";
 
 const remote: DevinSession = {
@@ -87,6 +88,16 @@ const seed = Effect.fnUntraced(
       insertedAt: "1970-01-01T00:00:00.000Z",
       updatedAt: "1970-01-01T00:00:00.000Z",
     });
+    if (
+      issueNumber !== null && issueNumber > 0 &&
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)
+    ) {
+      yield* db.insert(issueAdmissions).values({
+        repo: repo.toLowerCase(),
+        issueNumber,
+        canonicalSessionId: id,
+      }).onConflictDoNothing();
+    }
   },
 );
 
@@ -273,7 +284,7 @@ notificationTest(
       assert.equal(session.completionObservedAt, null);
       assert.equal(session.prNumber, 8);
       assert.equal(session.outputs[0].summary, "PRIVATE QUESTION");
-      yield* seed(db, "capacity-next");
+      yield* seed(db, "capacity-next", "owner/repo", 43);
       yield* db.update(devinSessions).set({
         status: "pending",
         devinSessionId: null,
@@ -620,6 +631,8 @@ notificationTest(
       });
       const [old] = yield* repository.claimPending;
       yield* repository.rejectSubmission(old.session, true);
+      assert.deepEqual(yield* repository.claimPending, []);
+      yield* TestClock.adjust("30 seconds");
       assert.deepEqual(yield* db.select().from(notifications), []);
       const [current] = yield* repository.claimPending;
       assert.equal(

@@ -14,6 +14,124 @@ import {
   seedRecovery,
 } from "../test/fixtures/session-recovery.ts";
 
+for (const action of ["resume", "associate"] as const) {
+  recoveryTest(
+    `verified ${action} of a closed row permits an actual due observation`,
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseClient;
+      const admin = yield* SessionAdministration;
+      const repository = yield* DevinSessionRepository;
+      yield* seedRecovery(db, "one", {
+        providerLifecycle: "closed",
+        isArchived: true,
+        activeWork: false,
+        providerUpdatedAt: 2,
+        localOwnership: "released",
+      });
+      assert.deepEqual(yield* repository.claimDueObservations(), []);
+      const view = yield* admin.inspect("one");
+      yield* admin.execute(
+        {
+          id: "one",
+          action,
+          revision: view.revision,
+          reason: "Verified original session",
+          ...(action === "associate" ? { remoteId: "remote-one" } : {}),
+        },
+        () =>
+          Effect.succeed({
+            outcome: "found",
+            httpStatus: 200,
+            session: recoveryRemote(),
+          }),
+      );
+      const [claim] = yield* repository.claimDueObservations();
+      assert.ok(
+        claim,
+        "accepted recovery must make the closed session observable",
+      );
+      assert.equal(claim.session.providerLifecycle, "closed");
+      assert.equal(
+        yield* repository.recordObservation(claim, {
+          ...recoveryRemote(),
+          is_archived: false,
+        }),
+        true,
+      );
+      assert.equal((yield* admin.inspect("one")).providerLifecycle, "active");
+      assert.equal((yield* admin.inspect("one")).remoteId, "remote-one");
+    }),
+    missingFetch,
+  );
+}
+
+recoveryTest(
+  "requested closed-row observation survives stale and missing evidence and clears only on accepted archive observation",
+  Effect.gen(function* () {
+    const { db } = yield* DatabaseClient;
+    const admin = yield* SessionAdministration;
+    const repository = yield* DevinSessionRepository;
+    yield* seedRecovery(db, "one", {
+      providerLifecycle: "closed",
+      isArchived: true,
+      activeWork: false,
+      providerUpdatedAt: 2,
+    });
+    const before = yield* admin.inspect("one");
+    yield* admin.execute(
+      {
+        id: "one",
+        action: "resume",
+        revision: before.revision,
+        reason: "Verify retained identity",
+      },
+      () =>
+        Effect.succeed({
+          outcome: "found",
+          httpStatus: 200,
+          session: recoveryRemote(),
+        }),
+    );
+    const [stale] = yield* repository.claimDueObservations();
+    assert.equal(
+      yield* repository.recordObservation(stale, {
+        ...recoveryRemote(),
+        updated_at: 1,
+      }),
+      false,
+    );
+    assert.equal((yield* admin.inspect("one")).observationRequested, true);
+    yield* TestClock.adjust("60 seconds");
+    const [missing] = yield* repository.claimDueObservations();
+    yield* repository.recordLookupFailure(missing, "missing");
+    assert.equal((yield* admin.inspect("one")).observationRequested, true);
+    yield* TestClock.adjust("30 seconds");
+    const [current] = yield* repository.claimDueObservations();
+    assert.equal(
+      yield* repository.recordObservation(stale, {
+        ...recoveryRemote(),
+        is_archived: false,
+        updated_at: 4,
+      }),
+      false,
+    );
+    assert.equal((yield* admin.inspect("one")).observationRequested, true);
+    assert.equal(
+      yield* repository.recordObservation(current, {
+        ...recoveryRemote(),
+        is_archived: true,
+        updated_at: 3,
+      }),
+      true,
+    );
+    assert.equal((yield* admin.inspect("one")).observationRequested, false);
+    assert.equal((yield* admin.inspect("one")).providerLifecycle, "closed");
+    yield* TestClock.adjust("1 hour");
+    assert.deepEqual(yield* repository.claimDueObservations(), []);
+  }),
+  missingFetch,
+);
+
 recoveryTest(
   "missing reconciliation escalates durably, backs off to one hour, and never releases uncertain capacity",
   Effect.gen(function* () {

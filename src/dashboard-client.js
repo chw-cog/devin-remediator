@@ -8,6 +8,7 @@ let timer;
 let pending;
 let stopped = false;
 let loginRequired = false;
+let page = Number(root.dataset.page);
 
 function formatNumber(value) {
   if (value === null) return "—";
@@ -116,10 +117,23 @@ function sessionCard(session) {
 }
 
 function display(snapshot) {
+  const activePage = snapshot.activePage;
   if (
     snapshot.repository !== root.dataset.repository ||
     !Array.isArray(snapshot.activeSessions) ||
     snapshot.activeSessions.length > 3 ||
+    !Number.isSafeInteger(snapshot.activeSessionCount) ||
+    snapshot.activeSessionCount < 0 ||
+    !activePage || activePage.size !== 3 ||
+    !Number.isSafeInteger(activePage.number) || activePage.number < 1 ||
+    activePage.pageCount !==
+      Math.max(1, Math.ceil(snapshot.activeSessionCount / 3)) ||
+    activePage.number > activePage.pageCount ||
+    snapshot.activeSessions.length !==
+      Math.min(
+        3,
+        Math.max(0, snapshot.activeSessionCount - (activePage.number - 1) * 3),
+      ) ||
     !Number.isFinite(Date.parse(snapshot.generatedAt))
   ) throw new Error("Invalid snapshot");
   const metricValues = [
@@ -173,9 +187,37 @@ function display(snapshot) {
     `Session start → PR merged · ${snapshot.timing.merged.sampleCount} samples`,
   );
   setText(
-    ".sessions .section-heading span",
-    `Showing ${cards.length} of ${snapshot.activeSessionCount} · latest observations`,
+    "#page-feedback",
+    `Page ${activePage.number} of ${activePage.pageCount} · Showing ${
+      snapshot.activeSessionCount === 0 ? 0 : (activePage.number - 1) * 3 + 1
+    }–${
+      (activePage.number - 1) * 3 + cards.length
+    } of ${snapshot.activeSessionCount}`,
   );
+  page = activePage.number;
+  root.dataset.page = String(page);
+  refreshLink.href = `/dashboard?page=${page}`;
+  root.querySelector("#metrics-json").href = `/api/v1/metrics?page=${page}`;
+  for (
+    const [selector, number, enabled] of [[
+      "#previous-page",
+      page - 1,
+      page > 1,
+    ], ["#next-page", page + 1, page < activePage.pageCount]]
+  ) {
+    const control = root.querySelector(selector);
+    if (enabled) {
+      control.href = `/dashboard?page=${number}`;
+      control.removeAttribute("aria-disabled");
+      control.removeAttribute("tabindex");
+    } else {
+      control.removeAttribute("href");
+      control.setAttribute("role", "link");
+      control.setAttribute("aria-disabled", "true");
+      control.setAttribute("tabindex", "-1");
+    }
+  }
+  history.replaceState(null, "", `/dashboard?page=${page}`);
   const focused = document.activeElement;
   const focusedSession = focused?.closest("[data-session-id]")?.dataset
     .sessionId;
@@ -241,7 +283,7 @@ async function refresh() {
   const timeout = setTimeout(() => pending?.abort(), 20_000);
   status.textContent = "Refreshing…";
   try {
-    const response = await fetch("/api/v1/metrics", {
+    const response = await fetch(`/api/v1/metrics?page=${page}`, {
       credentials: "same-origin",
       cache: "no-store",
       redirect: "error",

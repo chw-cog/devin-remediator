@@ -1,4 +1,5 @@
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer } from "effect";
+import { issueIdentity } from "./issue-admission.ts";
 import { DevinClient, DevinSubmissionError } from "./devin.ts";
 import type { DeliveryRecord } from "./devin-session-repository.ts";
 import { AppConfig } from "./config.ts";
@@ -21,13 +22,6 @@ const issuePlaybook = {
   title: "Fix Superset issue",
   macro: "!fix-superset-issue",
 };
-
-const decodeDevinLabel = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.Struct({
-    action: Schema.Literal("labeled"),
-    label: Schema.Struct({ name: Schema.Literal("devin") }),
-  })),
-);
 
 export class WebhookEventProcessors extends Context.Service<
   WebhookEventProcessors,
@@ -111,10 +105,7 @@ export class WebhookEventProcessors extends Context.Service<
           delivery: DeliveryRecord,
           client: DevinClient["Service"],
         ): Effect.fn.Return<WebhookEventOutcome, DevinSubmissionError> {
-          const matched = yield* decodeDevinLabel(delivery.payload).pipe(
-            Effect.result,
-          );
-          if (matched._tag === "Failure") {
+          if (issueIdentity(delivery) === null) {
             yield* Effect.logDebug("webhook.filter_not_matched").pipe(
               Effect.annotateLogs({ reason: "requires_issues_labeled_devin" }),
             );

@@ -14,9 +14,11 @@ const testEnv = {
   SQLITE_DB_FILEPATH: ":memory:",
 };
 
-const pushBody = JSON.stringify({
+const issueBody = JSON.stringify({
   repository: { full_name: "owner/repo" },
-  ref: "refs/heads/main",
+  action: "labeled",
+  label: { name: "devin" },
+  issue: { number: 42 },
 });
 
 function sign(body: string, secret = testEnv.GITHUB_WEBHOOK_SECRET) {
@@ -25,9 +27,9 @@ function sign(body: string, secret = testEnv.GITHUB_WEBHOOK_SECRET) {
 
 function setup(app: Effect.Success<typeof createApp>) {
   const deliver = (
-    body = pushBody,
+    body = issueBody,
     {
-      event = "push",
+      event = "issues",
       delivery = "test-delivery",
       signature = sign(body),
     }: {
@@ -103,7 +105,7 @@ databaseTest(
 );
 
 databaseTest(
-  "every supported event commits a delivery and pending session before 200",
+  "nonmatching supported events commit only delivery history before 200",
   async ({ db, deliver }) => {
     const payloads = {
       check_run: { action: "completed", check_run: { id: 1 } },
@@ -143,53 +145,7 @@ databaseTest(
           eq(devinSessions.githubDeliveryId, event),
         ).get(),
       );
-      assert.ok(session);
-      assert.match(session.id, /^[0-9a-f-]{36}$/);
-      assert.notEqual(session.id, row.id);
-      assert.deepEqual(session, {
-        id: session.id,
-        githubDeliveryId: event,
-        status: "pending",
-        localOwnership: "tracking",
-        adminVersion: 0,
-        lookupFailureCount: 0,
-        lookupFailureStreak: 0,
-        firstLookupFailureAt: null,
-        lastLookupFailureAt: null,
-        lastLookupFailure: null,
-        reconciliationEscalatedAt: null,
-        nextRecoveryAt: "1970-01-01T00:00:00.000Z",
-        recoveryCandidateIds: [],
-        providerStatus: null,
-        providerStatusDetail: null,
-        providerLifecycle: null,
-        activeWork: null,
-        isArchived: null,
-        providerCreatedAt: null,
-        providerUpdatedAt: null,
-        acusConsumed: null,
-        sessionUrl: null,
-        lastObservedAt: null,
-        nextObservationAt: "1970-01-01T00:00:00.000Z",
-        observationVersion: 0,
-        observationLeaseUntil: null,
-        completionObservedAt: null,
-        outputs: [],
-        analysis: null,
-        analysisStatus: "pending",
-        analysisAttempts: 0,
-        analysisGeneration: 0,
-        analysisNextAttemptAt: "1970-01-01T00:00:00.000Z",
-        analysisReason: null,
-        devinSessionId: null,
-        prNumber: null,
-        attempts: 0,
-        claimVersion: 0,
-        recoveryEmptyChecks: 0,
-        recoveryBlocked: false,
-        insertedAt: row.insertedAt,
-        updatedAt: row.insertedAt,
-      });
+      assert.equal(session, undefined);
     }
     assert.equal(
       (await Effect.runPromise(db.select().from(githubWebhookDeliveries).all()))
@@ -198,13 +154,13 @@ databaseTest(
     );
     assert.equal(
       (await Effect.runPromise(db.select().from(devinSessions).all())).length,
-      5,
+      0,
     );
   },
 );
 
 databaseTest(
-  "issues.labeled queues work without requiring a label",
+  "issues.labeled without the added devin label retains delivery but queues no work",
   async ({ db, deliver }) => {
     const response = await deliver(
       JSON.stringify({
@@ -222,7 +178,7 @@ databaseTest(
     );
     assert.equal(
       (await Effect.runPromise(db.select().from(devinSessions).get()))?.status,
-      "pending",
+      undefined,
     );
   },
 );
@@ -238,11 +194,11 @@ databaseTest(
         ["null", {}],
         ["[]", {}],
         ['"push"', {}],
-        [pushBody, { event: null }],
-        [pushBody, { event: "" }],
-        [pushBody, { delivery: "" }],
-        [pushBody, { signature: null }],
-        [pushBody, { signature: "" }],
+        [issueBody, { event: null }],
+        [issueBody, { event: "" }],
+        [issueBody, { delivery: "" }],
+        [issueBody, { signature: null }],
+        [issueBody, { signature: "" }],
       ] as const
     ) {
       const response = await deliver(body, options);
@@ -283,9 +239,9 @@ databaseTest(
       ]
     ) {
       const response = await deliver(JSON.stringify(payload));
-      assert.equal(response.status, 500);
+      assert.equal(response.status, 400);
       assert.deepEqual(await response.json(), {
-        error: "Webhook handling failed",
+        error: "Invalid webhook payload",
       });
     }
     assert.deepEqual(
@@ -307,7 +263,7 @@ databaseTest(
     const tampered = await deliver(JSON.stringify(JSON.parse(body)), {
       signature: sign(body),
     });
-    assert.equal(tampered.status, 500);
+    assert.equal(tampered.status, 401);
     assert.deepEqual(
       await Effect.runPromise(db.select().from(githubWebhookDeliveries).all()),
       [],
@@ -327,7 +283,7 @@ databaseTest(
     );
     assert.equal(
       (await Effect.runPromise(db.select().from(devinSessions).get()))?.status,
-      "pending",
+      undefined,
     );
   },
 );
@@ -336,10 +292,10 @@ databaseTest(
   "invalid signatures return a generic error without writes",
   async ({ db, deliver }) => {
     for (const signature of ["not-a-signature", `sha256=${"0".repeat(64)}`]) {
-      const response = await deliver(pushBody, { signature });
-      assert.equal(response.status, 500);
+      const response = await deliver(issueBody, { signature });
+      assert.equal(response.status, 401);
       assert.deepEqual(await response.json(), {
-        error: "Webhook handling failed",
+        error: "Invalid webhook signature",
       });
     }
     assert.deepEqual(
@@ -363,14 +319,14 @@ databaseTest(
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
     ));
     const { deliver } = setup(app);
-    const wrongSecret = await deliver(pushBody);
-    assert.equal(wrongSecret.status, 500);
+    const wrongSecret = await deliver(issueBody);
+    assert.equal(wrongSecret.status, 401);
     assert.deepEqual(
       await Effect.runPromise(db.select().from(githubWebhookDeliveries).all()),
       [],
     );
-    const response = await deliver(pushBody, {
-      signature: sign(pushBody, env.GITHUB_WEBHOOK_SECRET),
+    const response = await deliver(issueBody, {
+      signature: sign(issueBody, env.GITHUB_WEBHOOK_SECRET),
     });
     assert.equal(response.status, 200);
     assert.equal(
@@ -400,7 +356,7 @@ databaseTest(
     );
 
     const responses = await Promise.all(
-      Array.from({ length: 10 }, () => deliver(`${pushBody}\n`)),
+      Array.from({ length: 10 }, () => deliver(`${issueBody}\n`)),
     );
     assert.ok(responses.every((response) => response.status === 200));
     assert.deepEqual(
@@ -412,8 +368,8 @@ databaseTest(
       sessions,
     );
     assert.equal(
-      (await deliver(pushBody, { signature: sign("tampered") })).status,
-      500,
+      (await deliver(issueBody, { signature: sign("tampered") })).status,
+      401,
     );
   },
 );

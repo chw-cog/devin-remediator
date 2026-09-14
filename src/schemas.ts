@@ -52,6 +52,8 @@ export const devinSessions = sqliteTable("devin_sessions", {
   reconciliationEscalatedAt: text("reconciliation_escalated_at"),
   nextRecoveryAt: text("next_recovery_at").notNull()
     .default("1970-01-01T00:00:00.000Z"),
+  nextSubmissionAt: text("next_submission_at").notNull()
+    .default("1970-01-01T00:00:00.000Z"),
   adminVersion: integer("admin_version").notNull().default(0),
   recoveryCandidateIds: text("recovery_candidate_ids", { mode: "json" })
     .$type<ReadonlyArray<string>>().notNull().default([]),
@@ -68,6 +70,8 @@ export const devinSessions = sqliteTable("devin_sessions", {
   nextObservationAt: text("next_observation_at").notNull()
     .default("1970-01-01T00:00:00.000Z"),
   observationVersion: integer("observation_version").notNull().default(0),
+  observationRequested: integer("observation_requested", { mode: "boolean" })
+    .notNull().default(false),
   observationLeaseUntil: text("observation_lease_until"),
   completionObservedAt: text("completion_observed_at"),
   outputs: text("outputs", { mode: "json" })
@@ -120,6 +124,26 @@ export const devinSessions = sqliteTable("devin_sessions", {
   check(
     "devin_sessions_outputs_check",
     sql`CASE WHEN json_valid(${table.outputs}) THEN json_type(${table.outputs}) = 'array' ELSE 0 END`,
+  ),
+]);
+
+export const issueAdmissions = sqliteTable("issue_admissions", {
+  repo: text("repo").notNull(),
+  issueNumber: integer("issue_number").notNull(),
+  canonicalSessionId: text("canonical_session_id").notNull().unique()
+    .references(() => devinSessions.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+}, (table) => [
+  primaryKey({ columns: [table.repo, table.issueNumber] }),
+  check(
+    "issue_admissions_repo_check",
+    sql`${table.repo} = lower(${table.repo}) AND ${table.repo} NOT GLOB '*[^a-z0-9_./-]*' AND length(${table.repo}) - length(replace(${table.repo}, '/', '')) = 1 AND ${table.repo} NOT LIKE '/%' AND ${table.repo} NOT LIKE '%/'`,
+  ),
+  check(
+    "issue_admissions_number_check",
+    sql`typeof(${table.issueNumber}) = 'integer' AND ${table.issueNumber} BETWEEN 1 AND 9007199254740991`,
   ),
 ]);
 

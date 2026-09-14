@@ -9,7 +9,11 @@ import * as Reactivity from "effect/unstable/reactivity/Reactivity";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import { type AppDatabase, DatabaseClient } from "./database.ts";
 import { DevinSessionRepository } from "./devin-session-repository.ts";
-import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
+import {
+  devinSessions,
+  githubWebhookDeliveries,
+  issueAdmissions,
+} from "./schemas.ts";
 
 const TestLive = DatabaseClient.layer.pipe(Layer.provide(
   ConfigProvider.layer(ConfigProvider.fromUnknown({
@@ -28,6 +32,7 @@ const delivery = {
   eventName: "push",
   repo: "owner/repo",
   payload: "{}",
+  issueNumber: 42,
   insertedAt,
 };
 
@@ -102,7 +107,12 @@ databaseTest(
     Effect.gen(function* () {
       yield* db.insert(githubWebhookDeliveries).values([
         delivery,
-        { ...delivery, id: "delivery-row-2", deliveryId: "github-2" },
+        {
+          ...delivery,
+          id: "delivery-row-2",
+          deliveryId: "github-2",
+          issueNumber: 43,
+        },
       ]);
       const insertSession = (
         id: string | null,
@@ -188,6 +198,15 @@ databaseTest(
       ) {
         yield* assertSqlFailure(db.$client.unsafe(statement), error);
       }
+      yield* db.insert(issueAdmissions).values([{
+        repo: "owner/repo",
+        issueNumber: 42,
+        canonicalSessionId: "session-1",
+      }, {
+        repo: "owner/repo",
+        issueNumber: 43,
+        canonicalSessionId: "session-2",
+      }]);
       for (
         const status of [
           "submitting",
@@ -221,6 +240,11 @@ databaseTest(
         status: "pending",
         insertedAt,
         updatedAt: insertedAt,
+      });
+      yield* db.insert(issueAdmissions).values({
+        repo: "owner/repo",
+        issueNumber: 42,
+        canonicalSessionId: "outcome-row",
       });
       for (
         const status of [
@@ -312,6 +336,7 @@ databaseTest(
           ...delivery,
           id: `delivery-${index}`,
           deliveryId,
+          issueNumber: index + 1,
         });
         const output = outcome === null ? null : {
           outcome,
@@ -327,7 +352,7 @@ databaseTest(
         yield* db.insert(devinSessions).values({
           id: `session-${index}`,
           githubDeliveryId: deliveryId,
-          status,
+          status: status === "submitting" ? "pending" : status,
           outputs: output === null ? [] : [output],
           analysis: outcome === null
             ? null
@@ -345,6 +370,13 @@ databaseTest(
           updatedAt: insertedAt,
         });
       }
+      yield* db.insert(issueAdmissions).values({
+        repo: "owner/repo",
+        issueNumber: 2,
+        canonicalSessionId: "session-1",
+      });
+      yield* db
+        .$client`UPDATE devin_sessions SET status = 'submitting' WHERE id = 'session-1'`;
       const deliveries = yield* db.select().from(githubWebhookDeliveries);
       const sessions = yield* db.select().from(devinSessions);
       assert.equal(sessions.length, cases.length);
@@ -490,6 +522,8 @@ for (const includeOutcomeMigration of [false, true]) {
               last_lookup_failure: null,
               reconciliation_escalated_at: null,
               next_recovery_at: "1970-01-01T00:00:00.000Z",
+              next_submission_at: "1970-01-01T00:00:00.000Z",
+              observation_requested: 0,
               recovery_candidate_ids: "[]",
               provider_status: null,
               provider_status_detail: null,

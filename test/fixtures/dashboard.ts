@@ -1,6 +1,7 @@
 import { Effect, Redacted } from "effect";
 import { createDashboard } from "../../src/dashboard.ts";
 import type { MetricsSnapshot } from "../../src/metrics.ts";
+import { paginateSnapshot } from "../../src/dashboard-pagination.ts";
 
 const snapshot: MetricsSnapshot = {
   repository: "example/service",
@@ -50,6 +51,7 @@ const snapshot: MetricsSnapshot = {
   },
   github: { status: "available", checkedAt: "2026-09-14T10:42:00.000Z" },
   activeSessionCount: 3,
+  activePage: { number: 1, pageCount: 1, size: 3 },
   activeSessions: [
     {
       id: "demo-1",
@@ -99,16 +101,35 @@ const snapshot: MetricsSnapshot = {
   ],
 };
 
+let sessions = snapshot.activeSessions;
+
 const app = createDashboard({
   repository: snapshot.repository,
   username: "viewer",
   password: Redacted.make("browser-fixture-password"),
-  snapshot: Effect.succeed(snapshot),
+  snapshot: (page = 1) =>
+    Effect.sync(() =>
+      paginateSnapshot({
+        ...snapshot,
+        activeSessions: sessions,
+        activeSessionCount: sessions.length,
+      }, page)
+    ),
 });
 
 export default app;
 
 if (import.meta.main) {
+  app.post("/__fixture/count/:count", (c) => {
+    const count = Number(c.req.param("count"));
+    if (![0, 1, 3, 4, 7].includes(count)) return c.body(null, 400);
+    sessions = Array.from({ length: count }, (_, index) => ({
+      ...snapshot.activeSessions[index % 3],
+      id: `demo-${index + 1}`,
+      url: `https://app.devin.ai/sessions/demo-${index + 1}`,
+    }));
+    return c.body(null, 204);
+  });
   Deno.serve({
     hostname: "127.0.0.1",
     port: 0,

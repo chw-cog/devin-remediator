@@ -14,6 +14,7 @@ import {
   missingFetch,
   recoveryLayer,
 } from "../test/fixtures/session-recovery.ts";
+import { TestClock } from "effect/testing";
 import { Reactivity } from "effect/unstable/reactivity";
 
 Deno.test("ACU/generation then session_reconciliation migrate populated baseline with foreign keys and immutable evidence intact", async () => {
@@ -43,14 +44,20 @@ Deno.test("ACU/generation then session_reconciliation migrate populated baseline
         );
         yield* sql`PRAGMA foreign_keys = ON`;
         yield* migrate(db, { migrationsFolder: directory });
-        yield* sql`INSERT INTO github_webhook_deliveries (id, delivery_id, event_name, repo, payload, inserted_at) VALUES ('one', 'one', 'issues', 'owner/repo', 'PRIVATE payload', 'old')`;
+        yield* sql`INSERT INTO github_webhook_deliveries (id, delivery_id, event_name, repo, issue_number, payload, inserted_at) VALUES ('one', 'one', 'issues', 'owner/repo', 1, 'PRIVATE payload', 'old')`;
         yield* sql`INSERT INTO devin_sessions (id, github_delivery_id, status, devin_session_id, provider_lifecycle, active_work, outputs, analysis, analysis_status, claim_version, observation_version, inserted_at, updated_at) VALUES ('one', 'one', 'submitted', 'remote-one', 'needs_input', 0, '[{"outcome":"needs_human","summary":"PRIVATE retained"}]', '{"retained":true}', 'collected', 7, 9, 'old', 'old')`;
         yield* sql`INSERT INTO attention_notifications (id, session_record_id, sequence, reason, repo, body, possible_send_at, expected_app_id, expected_installation_id) VALUES ('notice', 'one', 1, 'needs_input', 'owner/repo', 'PRIVATE body', 1, 42, 43)`;
         for (
           const [id, checks] of [["ambiguous", 2], ["retryable", 0]] as const
         ) {
-          yield* sql`INSERT INTO github_webhook_deliveries (id, delivery_id, event_name, repo, payload, inserted_at) VALUES (${id}, ${id}, 'issues', 'owner/repo', 'PRIVATE payload', 'old')`;
-          yield* sql`INSERT INTO devin_sessions (id, github_delivery_id, status, attempts, recovery_empty_checks, outputs, inserted_at, updated_at) VALUES (${id}, ${id}, 'pending', 1, ${checks}, '[{"outcome":"needs_human","summary":"PRIVATE legacy"}]', 'old', 'old')`;
+          yield* sql`INSERT INTO github_webhook_deliveries (id, delivery_id, event_name, repo, issue_number, payload, inserted_at) VALUES (${id}, ${id}, 'issues', 'owner/repo', ${
+            id === "ambiguous" ? 2 : 3
+          }, '{"action":"labeled","label":{"name":"devin"}}', 'old')`;
+          yield* sql`INSERT INTO devin_sessions (id, github_delivery_id, status, attempts, recovery_empty_checks, outputs, inserted_at, updated_at) VALUES (${id}, ${id}, 'pending', 1, ${checks}, ${
+            checks
+              ? '[{"outcome":"needs_human","summary":"PRIVATE legacy"}]'
+              : "[]"
+          }, 'old', 'old')`;
         }
         const [legacy] =
           yield* sql`SELECT * FROM devin_sessions WHERE id = 'ambiguous'`;
@@ -126,7 +133,7 @@ Deno.test("ACU/generation then session_reconciliation migrate populated baseline
           upgraded,
         );
         assert.deepEqual(yield* sql`SELECT * FROM session_admin_events`, audit);
-        yield* sql`INSERT INTO github_webhook_deliveries (id, delivery_id, event_name, repo, payload, inserted_at) VALUES ('unique-check', 'unique-check', 'issues', 'owner/repo', '{}', 'old')`;
+        yield* sql`INSERT INTO github_webhook_deliveries (id, delivery_id, event_name, repo, issue_number, payload, inserted_at) VALUES ('unique-check', 'unique-check', 'issues', 'owner/repo', 4, '{}', 'old')`;
         assert.equal(
           (yield* sql`INSERT INTO devin_sessions (id, github_delivery_id, status, devin_session_id, inserted_at, updated_at) VALUES ('two', 'unique-check', 'submitted', 'remote-one', 'old', 'old')`
             .pipe(Effect.result))._tag,
@@ -139,6 +146,7 @@ Deno.test("ACU/generation then session_reconciliation migrate populated baseline
         const repository = yield* DevinSessionRepository;
         const admin = yield* SessionAdministration;
         const orchestra = yield* DevinSessionOrchestrator;
+        yield* TestClock.setTime(new Date("2030-01-01T00:00:00Z").getTime());
         const eligible = yield* repository.claimPending;
         assert.deepEqual(eligible.map((work) => work.session.id), [
           "retryable",
@@ -153,6 +161,7 @@ Deno.test("ACU/generation then session_reconciliation migrate populated baseline
         assert.equal(row.remoteId, null);
       }).pipe(
         Effect.provide(recoveryLayer(`${directory}/baseline.sqlite`, 3)),
+        Effect.provide(TestClock.layer()),
         Effect.provideService(FetchHttpClient.Fetch, missingFetch),
         Effect.provide(Logger.layer([])),
         Effect.scoped,

@@ -14,7 +14,11 @@ import {
   type SessionRecord,
 } from "./devin-session-repository.ts";
 import { WebhookEventProcessors } from "./webhook-event-processors.ts";
-import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
+import {
+  devinSessions,
+  githubWebhookDeliveries,
+  issueAdmissions,
+} from "./schemas.ts";
 import {
   inspectSessionInsights,
   recollectInsights,
@@ -57,7 +61,7 @@ const seed = Effect.fnUntraced(
       deliveryId: id,
       eventName: "issues",
       repo: "owner/repo",
-      issueNumber: 42,
+      issueNumber: 42 + (yield* db.select().from(issueAdmissions)).length,
       payload: "PRIVATE webhook",
       insertedAt: epoch,
     });
@@ -69,6 +73,14 @@ const seed = Effect.fnUntraced(
       updatedAt: epoch,
       outputs: [{ outcome: "needs_human", summary: "PRIVATE output" }],
       ...overrides,
+    });
+    const [delivery] = yield* db.select().from(githubWebhookDeliveries).where(
+      eq(githubWebhookDeliveries.deliveryId, id),
+    );
+    yield* db.insert(issueAdmissions).values({
+      repo: delivery.repo,
+      issueNumber: delivery.issueNumber!,
+      canonicalSessionId: id,
     });
   },
 );

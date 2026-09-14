@@ -11,7 +11,12 @@ import {
 import { GitHubClient } from "../../src/github.ts";
 import { GitHubCommentNotifier } from "../../src/github-comment-notifier.ts";
 import { SessionAdministration } from "../../src/session-administration.ts";
-import { devinSessions, githubWebhookDeliveries } from "../../src/schemas.ts";
+import {
+  devinSessions,
+  githubWebhookDeliveries,
+  issueAdmissions,
+} from "../../src/schemas.ts";
+import { eq } from "drizzle-orm";
 import { WebhookEventProcessors } from "../../src/webhook-event-processors.ts";
 import { withPlaybookStartup } from "./playbook.ts";
 
@@ -40,24 +45,38 @@ export const seedRecovery = Effect.fnUntraced(
     overrides: Partial<SessionRecord> = {},
   ) {
     const now = DateTime.formatIso(yield* DateTime.now);
+    const issueNumber = 123 + (yield* db.select().from(issueAdmissions)).length;
     yield* db.insert(githubWebhookDeliveries).values({
       id: `delivery-${id}`,
       deliveryId: `delivery-${id}`,
       eventName: "issues",
       repo: "owner/repo",
-      issueNumber: 123,
+      issueNumber,
       payload: "PRIVATE payload",
       insertedAt: now,
     });
     const [row] = yield* db.insert(devinSessions).values({
       id,
       githubDeliveryId: `delivery-${id}`,
-      status: "submitted",
       devinSessionId: `remote-${id}`,
       insertedAt: now,
       updatedAt: now,
       ...overrides,
+      status: overrides.status === "submitting"
+        ? "pending"
+        : overrides.status ?? "submitted",
     }).returning();
+    yield* db.insert(issueAdmissions).values({
+      repo: "owner/repo",
+      issueNumber,
+      canonicalSessionId: id,
+    });
+    if (overrides.status === "submitting") {
+      const [submitted] = yield* db.update(devinSessions).set({
+        status: "submitting",
+      }).where(eq(devinSessions.id, id)).returning();
+      return submitted;
+    }
     return row;
   },
 );

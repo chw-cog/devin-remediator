@@ -38,6 +38,7 @@ import {
   attentionNotifications,
   devinSessions,
   githubWebhookDeliveries,
+  issueAdmissions,
 } from "./schemas.ts";
 import type { AppDatabase } from "./database.ts";
 
@@ -132,6 +133,7 @@ export class DevinSessionRepository extends Context.Service<
     readonly rejectSubmission: (
       claim: SessionRecord,
       retryable: boolean,
+      retryAt?: string,
     ) => Effect.Effect<ReadonlyArray<SessionRecord>, DatabaseError>;
     readonly recordObservation: (
       claim: ObservationClaim,
@@ -209,6 +211,13 @@ export class DevinSessionRepository extends Context.Service<
               eq(devinSessions.recoveryBlocked, false),
               eq(devinSessions.status, "pending"),
               isNull(devinSessions.devinSessionId),
+              inArray(
+                devinSessions.id,
+                tx.select({ id: issueAdmissions.canonicalSessionId }).from(
+                  issueAdmissions,
+                ),
+              ),
+              lte(devinSessions.nextSubmissionAt, updatedAt),
               lt(devinSessions.attempts, config.devinMaxAttempts),
             )).orderBy(asc(devinSessions.insertedAt), asc(devinSessions.id))
             .limit(capacity);
@@ -364,6 +373,7 @@ export class DevinSessionRepository extends Context.Service<
           lastObservedAt: DateTime.formatIso(now),
           nextObservationAt: nextObservationAt(state.status, now),
           observationLeaseUntil: null,
+          observationRequested: false,
           completionObservedAt: current.completionObservedAt ??
             (interpretSession({ ...remote, is_archived: false }).status ===
                 "completed"
@@ -478,6 +488,7 @@ export class DevinSessionRepository extends Context.Service<
                 eq(devinSessions.localOwnership, "tracking"),
                 isNotNull(devinSessions.devinSessionId),
                 or(
+                  eq(devinSessions.observationRequested, true),
                   isNull(devinSessions.providerLifecycle),
                   sql`${devinSessions.providerLifecycle} != 'closed'`,
                 ),
@@ -618,12 +629,24 @@ export class DevinSessionRepository extends Context.Service<
       const rejectSubmission = Effect.fn(
         "DevinSessionRepository.rejectSubmission",
       )(
-        function* (claim: SessionRecord, retryable: boolean) {
+        function* (claim: SessionRecord, retryable: boolean, retryAt?: string) {
+          const now = yield* DateTime.now;
+          const fallback = DateTime.formatIso(
+            DateTime.add(now, {
+              seconds: Math.min(
+                300,
+                30 * 2 ** Math.min(4, Math.max(0, claim.attempts - 1)),
+              ),
+            }),
+          );
           const status = retryable && claim.attempts < config.devinMaxAttempts
             ? "pending"
             : "failed";
           return yield* db.update(devinSessions).set({
             status,
+            nextSubmissionAt: retryAt !== undefined && retryAt > fallback
+              ? retryAt
+              : fallback,
             outputs: status === "failed"
               ? appendOutput({
                 outcome: "failed",

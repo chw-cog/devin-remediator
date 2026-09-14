@@ -1,8 +1,17 @@
 import { eq, sql } from "drizzle-orm";
-import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
+import {
+  Clock,
+  Context,
+  DateTime,
+  Effect,
+  Layer,
+  Option,
+  Schema,
+} from "effect";
 import { DashboardConfig } from "./config.ts";
 import { DatabaseClient, DatabaseError } from "./database.ts";
 import { readGitHubMetrics } from "./github-metrics.ts";
+import { paginateSnapshot } from "./dashboard-pagination.ts";
 import { GitHubClient } from "./github.ts";
 import type { ProviderLifecycle } from "./devin.ts";
 import type { RemediationOutcome } from "./remediation-output.ts";
@@ -109,11 +118,18 @@ export interface MetricsSnapshot {
     readonly status: "available" | "partial";
   };
   readonly activeSessionCount: number;
+  readonly activePage: {
+    readonly number: number;
+    readonly pageCount: number;
+    readonly size: 3;
+  };
   readonly activeSessions: ReadonlyArray<DashboardSession>;
 }
 
 export type Dashboard = NonNullable<Effect.Success<typeof DashboardConfig>> & {
-  readonly snapshot: Effect.Effect<MetricsSnapshot, DatabaseError>;
+  readonly snapshot: (
+    page?: number,
+  ) => Effect.Effect<MetricsSnapshot, DatabaseError>;
 };
 
 export class Metrics extends Context.Service<Metrics, {
@@ -126,6 +142,7 @@ export class Metrics extends Context.Service<Metrics, {
       if (config === null) return Metrics.of({ dashboard: null });
       const { db } = yield* DatabaseClient;
       const github = yield* GitHubClient;
+      const clock = yield* Clock.Clock;
       const snapshot = yield* Effect.gen(function* () {
         const generatedAt = DateTime.formatIso(yield* DateTime.now);
         const rows = yield* db.select({
@@ -223,12 +240,10 @@ export class Metrics extends Context.Service<Metrics, {
           session.providerLifecycle !== "completed" &&
           session.providerLifecycle !== "closed"
         ).sort((a, b) =>
-          (b.session.lastObservedAt ?? b.session.insertedAt).localeCompare(
-            a.session.lastObservedAt ?? a.session.insertedAt,
-          ) ||
+          b.session.insertedAt.localeCompare(a.session.insertedAt) ||
           a.session.id.localeCompare(b.session.id)
         );
-        const activeSessions = active.slice(0, 3).map(
+        const activeSessions = active.map(
           ({ id, session, delivery }): DashboardSession => {
             const title = decodeTitle(delivery.payload);
             return {
@@ -315,12 +330,21 @@ export class Metrics extends Context.Service<Metrics, {
           },
           activeSessionCount: active.length,
           activeSessions,
-        } satisfies MetricsSnapshot;
+        } satisfies Omit<MetricsSnapshot, "activePage">;
       }).pipe(
         Effect.provideService(GitHubClient, github),
         Effect.cachedWithTTL("30 seconds"),
       );
-      return Metrics.of({ dashboard: { ...config, snapshot } });
+      return Metrics.of({
+        dashboard: {
+          ...config,
+          snapshot: (page = 1) =>
+            snapshot.pipe(
+              Effect.provideService(Clock.Clock, clock),
+              Effect.map((value) => paginateSnapshot(value, page)),
+            ),
+        },
+      });
     }),
   );
 }

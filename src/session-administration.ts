@@ -69,6 +69,8 @@ const summary = (row: SessionRecord) => ({
   lastObservedAt: row.lastObservedAt,
   nextObservationAt: row.nextObservationAt,
   nextRecoveryAt: row.nextRecoveryAt,
+  nextSubmissionAt: row.nextSubmissionAt,
+  observationRequested: row.observationRequested,
   observationLeaseUntil: row.observationLeaseUntil,
   attempts: row.attempts,
   recoveryBlocked: row.recoveryBlocked,
@@ -291,6 +293,7 @@ export class SessionAdministration
                       status: "submitted" as const,
                       devinSessionId: remoteId,
                       nextObservationAt: DateTime.formatIso(now),
+                      observationRequested: true,
                     }),
                   }),
                 }).where(eq(devinSessions.id, row.id));

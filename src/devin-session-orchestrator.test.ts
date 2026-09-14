@@ -31,7 +31,11 @@ import {
   type ObservationClaim,
   type SessionRecord,
 } from "./devin-session-repository.ts";
-import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
+import {
+  devinSessions,
+  githubWebhookDeliveries,
+  issueAdmissions,
+} from "./schemas.ts";
 import {
   type WebhookEventOutcome,
   type WebhookEventProcessor,
@@ -168,25 +172,42 @@ const seed = Effect.fnUntraced(function* (
   deliveryOverrides: Partial<DeliveryRecord> = {},
 ) {
   const now = DateTime.formatIso(yield* DateTime.now);
-  yield* db.insert(githubWebhookDeliveries).values({
+  const issueNumber = 123 + (yield* db.select().from(issueAdmissions)).length;
+  const [delivery] = yield* db.insert(githubWebhookDeliveries).values({
     id: `delivery-row-${id}`,
     deliveryId: `delivery-${id}`,
     eventName: "issues",
     repo: "owner/repo",
-    issueNumber: 123,
-    payload:
-      '{"action":"labeled","label":{"name":"devin"},"issue":{"number":123,"title":"Fix this"}}',
+    issueNumber,
+    payload: JSON.stringify({
+      repository: { full_name: "owner/repo" },
+      action: "labeled",
+      label: { name: "devin" },
+      issue: { number: issueNumber, title: "Fix this" },
+    }),
     insertedAt: now,
     ...deliveryOverrides,
-  });
+  }).returning();
   yield* db.insert(devinSessions).values({
     id,
     githubDeliveryId: `delivery-${id}`,
-    status: "pending",
     insertedAt: now,
     updatedAt: now,
     ...overrides,
+    status: overrides.status === "submitting"
+      ? "pending"
+      : overrides.status ?? "pending",
   });
+  yield* db.insert(issueAdmissions).values({
+    repo: delivery.repo.toLowerCase(),
+    issueNumber: delivery.issueNumber!,
+    canonicalSessionId: id,
+  });
+  if (overrides.status === "submitting") {
+    yield* db.update(devinSessions).set({ status: "submitting" }).where(
+      eq(devinSessions.id, id),
+    );
+  }
 });
 
 const row = Effect.fnUntraced(function* (db: AppDatabase, id: string) {
@@ -1332,7 +1353,7 @@ orchestrationTest(
 );
 
 orchestrationTest(
-  "definite retryable rejection consumes one attempt per tick and eventually fails",
+  "definite retryable rejection waits for persisted exponential due times and eventually fails",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
       yield* seed(db, "one");
@@ -1359,10 +1380,18 @@ orchestrationTest(
         );
         assert.equal(saved.devinSessionId, null);
         assert.equal(fake.creates.length, attempt);
+        if (attempt < 3) {
+          yield* orchestra.tick;
+          assert.equal(fake.creates.length, attempt);
+          yield* TestClock.adjust(`${30 * 2 ** (attempt - 1) - 1} seconds`);
+          yield* orchestra.tick;
+          assert.equal(fake.creates.length, attempt);
+          yield* TestClock.adjust("1 second");
+        }
       }
       yield* orchestra.tick;
       assert.equal(fake.creates.length, 3);
-    }),
+    }).pipe(Effect.provide(TestClock.layer())),
 );
 
 orchestrationTest(
@@ -1973,7 +2002,7 @@ orchestrationTest(
         assert.equal(fake.creates.length, 1);
         assert.equal((yield* row(db, "one")).status, "pending");
         fake.behavior.create = () => Effect.succeed(remote);
-        yield* TestClock.adjust(2999);
+        yield* TestClock.adjust(29999);
         assert.equal(fake.creates.length, 1);
         yield* TestClock.adjust(1);
         assert.equal(fake.creates.length, 2);

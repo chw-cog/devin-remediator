@@ -24,6 +24,134 @@ const auth = {
   authorization: `Basic ${btoa(`viewer:${env.DASHBOARD_PASSWORD}`)}`,
 };
 
+for (const count of [0, 1, 3, 4, 7]) {
+  Deno.test(`dashboard paginates ${count} current sessions without changing global cached metrics`, async () => {
+    const { layer, requests } = testLayer();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        for (let index = 0; index < count; index++) {
+          yield* seed(`page-${index}`, index + 1, { acusConsumed: 2 });
+        }
+        yield* seed("historic", 99, {
+          providerLifecycle: "completed",
+          acusConsumed: 3,
+        });
+        const app = yield* createApp;
+        for (const path of ["/dashboard", "/api/v1/metrics"]) {
+          for (
+            const query of [
+              "page=",
+              "page=0",
+              "page=-1",
+              "page=01",
+              "page=1.5",
+              "page=1e2",
+              "page=+1",
+              "page=%20",
+              "page=9007199254740992",
+              "page=1&page=2",
+            ]
+          ) {
+            const rejected = yield* Effect.promise(async () =>
+              await app.request(`${path}?${query}`, { headers: auth })
+            );
+            assert.equal(rejected.status, 400, query);
+            assert.deepEqual(
+              yield* Effect.promise(() => rejected.json()),
+              { error: "Invalid page" },
+            );
+            assert.equal(rejected.headers.get("cache-control"), "no-store");
+          }
+        }
+        assert.equal(requests.length, 0);
+        const metrics = yield* Metrics;
+        assert.ok(metrics.dashboard);
+        const baseline = yield* metrics.dashboard.snapshot();
+        const pageCount = Math.max(1, Math.ceil(count / 3));
+        const ids: string[] = [];
+        for (let page = 1; page <= pageCount; page++) {
+          const response = yield* Effect.promise(async () =>
+            await app.request(`/api/v1/metrics?page=${page}`, { headers: auth })
+          );
+          const snapshot = yield* Effect.promise(() => response.json());
+          assert.equal(response.status, 200);
+          assert.deepEqual(snapshot.activePage, {
+            number: page,
+            pageCount,
+            size: 3,
+          });
+          assert.equal(snapshot.activeSessionCount, count);
+          assert.equal(
+            snapshot.activeSessions.length,
+            Math.min(3, count - (page - 1) * 3),
+          );
+          assert.deepEqual(snapshot.issues, baseline.issues);
+          assert.deepEqual(snapshot.timing, baseline.timing);
+          assert.deepEqual(snapshot.usage, baseline.usage);
+          assert.equal(snapshot.generatedAt, baseline.generatedAt);
+          ids.push(
+            ...snapshot.activeSessions.map((session: { id: string }) =>
+              session.id
+            ),
+          );
+          const html = yield* Effect.promise(async () =>
+            (await app.request(`/dashboard?page=${page}`, { headers: auth }))
+              .text()
+          );
+          assert.ok(html.includes(`Page ${page} of ${pageCount}`));
+          assert.ok(html.includes(`href="/dashboard?page=${page}"`));
+          assert.equal(
+            (html.match(/class="session"/g) ?? []).length,
+            snapshot.activeSessions.length,
+          );
+        }
+        assert.deepEqual(
+          ids,
+          Array.from({ length: count }, (_, index) => `remote-page-${index}`),
+        );
+        assert.equal(baseline.usage.total, count * 2 + 3);
+        const excessive = yield* Effect.promise(async () =>
+          (await app.request("/api/v1/metrics?page=9007199254740991", {
+            headers: auth,
+          })).json()
+        );
+        assert.equal(excessive.activePage.number, pageCount);
+        assert.equal(requests.length, 1, "all pages reuse one GitHub snapshot");
+      }).pipe(Effect.provide(layer)),
+    );
+  });
+}
+
+Deno.test("refresh keeps a current page until cache expiry then clamps after the list shrinks", async () => {
+  const { layer } = testLayer();
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      for (let index = 0; index < 7; index++) {
+        yield* seed(`shrink-${index}`, index + 1, { acusConsumed: 1 });
+      }
+      const { db } = yield* DatabaseClient;
+      const app = yield* createApp;
+      const get = () =>
+        Effect.promise(async () =>
+          (await app.request("/api/v1/metrics?page=3", { headers: auth }))
+            .json()
+        );
+      const before = yield* get();
+      assert.equal(before.activePage.number, 3);
+      yield* db
+        .$client`UPDATE devin_sessions SET local_ownership = 'released' WHERE id != 'shrink-0'`;
+      assert.deepEqual(yield* get(), before);
+      yield* TestClock.adjust("31 seconds");
+      const after = yield* get();
+      assert.deepEqual(after.activePage, { number: 1, pageCount: 1, size: 3 });
+      assert.equal(after.activeSessionCount, 1);
+      assert.equal(after.activeSessions[0].id, "remote-shrink-0");
+      assert.deepEqual(after.usage, before.usage);
+      assert.deepEqual(after.issues, before.issues);
+    }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
+  );
+});
+
 function testLayer(
   respond: (request: Request) => Response = (request) =>
     Response.json(
@@ -150,7 +278,7 @@ Deno.test("metrics deduplicate issue/PR lookups and include inactive sessions in
       yield* seed("i", 8, { status: "pending", devinSessionId: null });
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
-      const snapshot = yield* metrics.dashboard.snapshot;
+      const snapshot = yield* metrics.dashboard.snapshot();
       assert.deepEqual(snapshot.issues, {
         repositoryTotal: 1248,
         assignedToDevin: 5,
@@ -236,7 +364,7 @@ Deno.test("GitHub partial failures remain unknown while local metrics and confir
       yield* seed("two", 2, { prNumber: 101 });
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
-      const snapshot = yield* metrics.dashboard.snapshot;
+      const snapshot = yield* metrics.dashboard.snapshot();
       assert.equal(snapshot.github.status, "partial");
       assert.equal(snapshot.issues.repositoryTotal, null);
       assert.equal(snapshot.issues.assignedToDevin, 2);
@@ -282,14 +410,17 @@ Deno.test("active session cap, safe links, escaping and auth are enforced on rea
     Effect.gen(function* () {
       yield* seed("oldest", 1, { lastObservedAt: "2026-09-14T00:00:00Z" });
       yield* seed("input", 2, {
+        insertedAt: "2026-09-14T00:02:00Z",
         providerLifecycle: "needs_input",
         lastObservedAt: "2026-09-14T00:02:00Z",
       });
       yield* seed("approval", 3, {
+        insertedAt: "2026-09-14T00:03:00Z",
         providerLifecycle: "needs_approval",
         lastObservedAt: "2026-09-14T00:03:00Z",
       });
       yield* seed("unsafe", 4, {
+        insertedAt: "2026-09-14T00:04:00Z",
         sessionUrl: "javascript:alert(1)",
         providerStatusDetail: "<script>steal()</script>",
         lastObservedAt: "2026-09-14T00:04:00Z",
@@ -330,7 +461,7 @@ Deno.test("active session cap, safe links, escaping and auth are enforced on rea
       );
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
-      const snapshot = yield* metrics.dashboard.snapshot;
+      const snapshot = yield* metrics.dashboard.snapshot();
       assert.equal(snapshot.activeSessionCount, 4);
       assert.deepEqual(snapshot.activeSessions.map((s) => s.id), [
         "remote-unsafe",
@@ -403,7 +534,7 @@ Deno.test("PR milestones work while Devin waits and a later merge changes only t
       });
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
-      const before = yield* metrics.dashboard.snapshot;
+      const before = yield* metrics.dashboard.snapshot();
       assert.equal(before.timing.fixProposed.medianMilliseconds, 240000);
       assert.equal(before.timing.fixProposed.sampleCount, 1);
       assert.equal(before.timing.merged.medianMilliseconds, null);
@@ -411,7 +542,7 @@ Deno.test("PR milestones work while Devin waits and a later merge changes only t
       assert.equal(before.timing.merged.excludedSessions, 1);
       merged = true;
       yield* TestClock.adjust("31 seconds");
-      const after = yield* metrics.dashboard.snapshot;
+      const after = yield* metrics.dashboard.snapshot();
       assert.deepEqual(after.timing.fixProposed, before.timing.fixProposed);
       assert.equal(after.timing.merged.medianMilliseconds, 1200000);
       assert.equal(after.timing.merged.sampleCount, 1);
@@ -469,7 +600,7 @@ Deno.test("invalid, missing and pre-session PR timestamps cannot fabricate durat
       }
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
-      const snapshot = yield* metrics.dashboard.snapshot;
+      const snapshot = yield* metrics.dashboard.snapshot();
       assert.deepEqual(snapshot.timing.fixProposed, {
         medianMilliseconds: 120000,
         sampleCount: 3,
@@ -501,7 +632,7 @@ Deno.test("unavailable GitHub timestamps yield unknown timing even when Devin co
       });
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
-      const snapshot = yield* metrics.dashboard.snapshot;
+      const snapshot = yield* metrics.dashboard.snapshot();
       for (const milestone of Object.values(snapshot.timing)) {
         assert.equal(milestone.medianMilliseconds, null);
         assert.equal(milestone.sampleCount, 0);
@@ -517,7 +648,7 @@ Deno.test("empty metrics distinguish no observations from measured zero", async 
     Effect.gen(function* () {
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
-      const snapshot = yield* metrics.dashboard.snapshot;
+      const snapshot = yield* metrics.dashboard.snapshot();
       assert.equal(snapshot.usage.total, null);
       assert.equal(snapshot.usage.averagePerSession, null);
       assert.equal(snapshot.timing.fixProposed.medianMilliseconds, null);
@@ -588,9 +719,10 @@ Deno.test("database failure returns a safe retry page and JSON 503, not fabricat
     repository: "owner/repo",
     username: "viewer",
     password: Redacted.make(env.DASHBOARD_PASSWORD),
-    snapshot: Effect.fail(
-      new DatabaseError({ cause: "private database path" }),
-    ),
+    snapshot: () =>
+      Effect.fail(
+        new DatabaseError({ cause: "private database path" }),
+      ),
   });
   for (const path of ["/dashboard", "/api/v1/metrics"]) {
     const response = await app.request(path, { headers: auth });
@@ -613,19 +745,19 @@ Deno.test("concurrent readers share a snapshot and see new observations after ca
       const metrics = yield* Metrics;
       assert.ok(metrics.dashboard);
       const snapshots = yield* Effect.all([
-        metrics.dashboard.snapshot,
-        metrics.dashboard.snapshot,
-        metrics.dashboard.snapshot,
+        metrics.dashboard.snapshot(),
+        metrics.dashboard.snapshot(),
+        metrics.dashboard.snapshot(),
       ], { concurrency: 3 });
       assert.equal(requests.length, 2);
       assert.equal(snapshots[0].timing.fixProposed.medianMilliseconds, 60000);
       yield* seed("second", 2, { acusConsumed: 2, prNumber: 101 });
       assert.equal(
-        (yield* metrics.dashboard.snapshot).issues.assignedToDevin,
+        (yield* metrics.dashboard.snapshot()).issues.assignedToDevin,
         1,
       );
       yield* TestClock.adjust("31 seconds");
-      const refreshed = yield* metrics.dashboard.snapshot;
+      const refreshed = yield* metrics.dashboard.snapshot();
       assert.equal(refreshed.issues.assignedToDevin, 2);
       assert.equal(refreshed.usage.total, 3);
       assert.equal(refreshed.usage.averagePerSession, 1.5);

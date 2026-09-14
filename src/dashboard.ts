@@ -1,4 +1,4 @@
-import { Cause, Effect, Redacted } from "effect";
+import { Cause, Effect, Redacted, Schema } from "effect";
 import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import { basicAuth } from "hono/basic-auth";
@@ -101,7 +101,8 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
         <script type="module" src="/dashboard/client.js"></script>
       </head>
       <body>
-        <div class="shell" data-repository="${snapshot.repository}"
+        <div class="shell" data-repository="${snapshot
+          .repository}" data-page="${snapshot.activePage.number}"
           data-lifecycles="${JSON.stringify(
             lifecycleLabels,
           )}" data-outcomes="${JSON.stringify(outcomeLabels)}">
@@ -111,7 +112,8 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
             <div
               class="header-actions"><a class="repo" href="https://github.com/${snapshot
                 .repository}" target="_blank" rel="noreferrer">${snapshot
-                .repository}</a><a id="refresh" class="button" href="/dashboard">↻ Refresh</a></div>
+                .repository}</a><a id="refresh" class="button" href="/dashboard?page=${snapshot
+                .activePage.number}">↻ Refresh</a></div>
           </header>
           <main>
             <div
@@ -153,7 +155,7 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
               <p
                 class="scope-note">Repository total is context; Devin counts cover this app only. Issues and PRs are different units—not one conversion funnel.</p>
               <div class="usage">
-                <div><div class="metric-name">Total observed usage</div><strong class="usage-value">${number(
+                <div><div class="metric-name">Provider-reported usage</div><strong class="usage-value">${number(
                   snapshot.usage.total,
                 )} <span>ACUs</span></strong><p>Usage known for ${snapshot.usage
                   .measuredSessions} of ${snapshot.usage
@@ -175,9 +177,31 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
             </section>
             <section class="sessions" aria-labelledby="sessions">
               <div
-                class="section-heading"><h2 id="sessions">In progress &amp; needs attention</h2><span>Showing ${snapshot
-                  .activeSessions.length} of ${snapshot
-                  .activeSessionCount} · latest observations</span></div>
+                class="section-heading"><h2 id="sessions">In progress &amp; needs attention</h2><span>Newest sessions first</span></div>
+              <nav class="pagination" aria-label="Current sessions pages">
+                <a id="previous-page" class="button"
+                  aria-label="Previous sessions page" ${snapshot.activePage
+                      .number > 1
+                    ? html`href="/dashboard?page=${
+                      snapshot.activePage.number - 1
+                    }"`
+                    : html`role="link" aria-disabled="true" tabindex="-1"`}>← Previous</a>
+                <span id="page-feedback" role="status"
+                  aria-live="polite">Page ${snapshot.activePage
+                    .number} of ${snapshot.activePage
+                    .pageCount} · Showing ${snapshot.activeSessionCount === 0
+                    ? 0
+                    : (snapshot.activePage.number - 1) * 3 +
+                      1}–${(snapshot.activePage.number - 1) * 3 +
+                    snapshot.activeSessions.length} of ${snapshot
+                    .activeSessionCount}</span>
+                <a id="next-page" class="button" aria-label="Next sessions page"
+                  ${snapshot.activePage.number < snapshot.activePage.pageCount
+                    ? html`href="/dashboard?page=${
+                      snapshot.activePage.number + 1
+                    }"`
+                    : html`role="link" aria-disabled="true" tabindex="-1"`}>Next →</a>
+              </nav>
               <div id="empty-sessions" class="empty"
                 ${snapshot.activeSessions.length === 0
                   ? ""
@@ -205,11 +229,12 @@ export const renderDashboard = (snapshot: MetricsSnapshot) =>
                   .excludedSessions}</span> sessions without a proposal sample; <span id="excluded-merged-samples">${snapshot
                   .timing.merged
                   .excludedSessions}</span> without a merge sample. Unmerged PRs have no merge sample. Medians describe separate cohorts; subtracting them does not give median review time.</li>
-                <li>Ongoing, paused, unknown and attention-needed sessions may appear, up to three, ordered by latest observation. Provider state and remediation outcome are separate; “Fix proposed” does not mean merged. Issue titles come from received webhooks, not a current GitHub lookup.</li>
+                <li>Ongoing, paused, unknown and attention-needed sessions appear three per page, newest sessions first. Pages can shift when the cached list refreshes. Historical, released, completed and archived sessions are not in this list. Provider state and remediation outcome are separate. “Fix proposed” does not mean merged. Issue titles come from received webhooks, not a current GitHub lookup.</li>
               </ul>
             </details>
             <footer
-              class="app-footer"><span>Tracked work only · No historical backfill</span><a href="/api/v1/metrics">View metrics JSON ↗</a></footer>
+              class="app-footer"><span>Tracked work only · No historical backfill</span><a id="metrics-json" href="/api/v1/metrics?page=${snapshot
+                .activePage.number}">View metrics JSON ↗</a></footer>
           </main>
         </div>
       </body>
@@ -234,6 +259,7 @@ h2{margin:0;font-size:14px;font-weight:650}.section-heading span,.scope-note{col
 .usage{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:20px;border:1px solid #dce3d8;border-radius:9px;background:#fff}.usage>div{padding:20px;min-width:0}
 .usage>div+div{border-left:1px solid #dce3d8}.usage-value{display:block;font-size:26px;font-weight:550;letter-spacing:-.04em;margin:8px 0;font-variant-numeric:tabular-nums}.usage-value span{font-size:12px;font-weight:400;letter-spacing:0;color:#586c60}
 .sessions{margin-top:28px}.session-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.session{min-width:0;border:1px solid #dce3d8;border-radius:9px;background:#fff;padding:20px}
+.pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;font-size:12px}.pagination [aria-disabled="true"]{color:#69736c;background:#eef1ea;cursor:default}.pagination span{min-width:0}
 .badge{display:inline-block;border-radius:5px;padding:4px 7px;font-size:10px;font-weight:650;background:#eaf2e7;color:#326e50}.badge.attention{color:#82532c;background:#fbeddc}
 .issue-number{display:block;font:11px ui-monospace,monospace;color:#586c60;margin:18px 0 7px}h4{font-size:14px;line-height:1.5;font-weight:600;margin:0 0 17px;min-height:42px}
 h4 a{text-decoration:none}h4 a:hover{text-decoration:underline}dl{margin:0}dl>div{display:flex;gap:8px;justify-content:space-between;padding:6px 0;font-size:11px}dt{color:#586c60;flex-shrink:0}dd{margin:0;text-align:right;min-width:0}
@@ -288,41 +314,53 @@ export function createDashboard(dashboard: Dashboard) {
     ));
   });
   for (const path of ["/dashboard", "/api/v1/metrics"]) {
-    app.get(path, (c) =>
-      Effect.runPromise(dashboard.snapshot.pipe(
-        Effect.map((snapshot) =>
-          path === "/dashboard"
-            ? c.html(renderDashboard(snapshot))
-            : c.json(snapshot)
+    app.get(path, async (c) => {
+      const pages = c.req.queries("page") ?? ["1"];
+      if (
+        pages.length !== 1 ||
+        !Schema.is(Schema.String.check(Schema.isPattern(/^[1-9]\d*$/)))(
+          pages[0],
+        ) || !Number.isSafeInteger(Number(pages[0]))
+      ) {
+        return c.json({ error: "Invalid page" }, 400);
+      }
+      return await Effect.runPromise(
+        dashboard.snapshot(Number(pages[0])).pipe(
+          Effect.map((snapshot) =>
+            path === "/dashboard"
+              ? c.html(renderDashboard(snapshot))
+              : c.json(snapshot)
+          ),
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.gen(function* () {
+                yield* Effect.logError("metrics.snapshot_failed");
+                return path === "/dashboard"
+                  ? c.html(
+                    html`
+                      <!doctype html>
+                      <html lang="en">
+                        <head>
+                          <meta charset="utf-8">
+                          <meta name="viewport" content="width=device-width,initial-scale=1">
+                          <title>Metrics unavailable</title>
+                          <link rel="stylesheet" href="/dashboard/styles.css">
+                        </head>
+                        <body>
+                          <main
+                            class="shell"><h1>Metrics are temporarily unavailable.</h1><p>No counts are available from local storage. Try again shortly.</p><a href="/dashboard">Retry</a></main>
+                        </body>
+                      </html>
+                    `,
+                    503,
+                  )
+                  : c.json({ error: "Metrics temporarily unavailable" }, 503);
+              })
+          ),
         ),
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.interrupt
-            : Effect.gen(function* () {
-              yield* Effect.logError("metrics.snapshot_failed");
-              return path === "/dashboard"
-                ? c.html(
-                  html`
-                    <!doctype html>
-                    <html lang="en">
-                      <head>
-                        <meta charset="utf-8">
-                        <meta name="viewport" content="width=device-width,initial-scale=1">
-                        <title>Metrics unavailable</title>
-                        <link rel="stylesheet" href="/dashboard/styles.css">
-                      </head>
-                      <body>
-                        <main
-                          class="shell"><h1>Metrics are temporarily unavailable.</h1><p>No counts are available from local storage. Try again shortly.</p><a href="/dashboard">Retry</a></main>
-                      </body>
-                    </html>
-                  `,
-                  503,
-                )
-                : c.json({ error: "Metrics temporarily unavailable" }, 503);
-            })
-        ),
-      )));
+      );
+    });
   }
   return app;
 }

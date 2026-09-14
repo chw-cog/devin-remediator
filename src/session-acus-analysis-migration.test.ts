@@ -73,6 +73,8 @@ Deno.test("session ACU/generation upgrade preserves baseline rows and collected 
             reconciliation_escalated_at: null,
             next_recovery_at: "1970-01-01T00:00:00.000Z",
             recovery_candidate_ids: "[]",
+            next_submission_at: "1970-01-01T00:00:00.000Z",
+            observation_requested: 0,
           })),
         );
         assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);

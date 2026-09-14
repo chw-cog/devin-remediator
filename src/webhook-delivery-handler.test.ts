@@ -3,8 +3,8 @@ import { createHmac } from "node:crypto";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
 import { DatabaseClient } from "./database.ts";
 import {
+  WebhookAuthenticationError,
   WebhookDeliveryHandler,
-  WebhookDeliveryHandlerError,
 } from "./webhook-delivery-handler.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 
@@ -20,7 +20,7 @@ const TestLive = WebhookDeliveryHandler.layer.pipe(
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(testEnv))),
 );
 
-Deno.test("receive verifies before parsing payloads and wraps failures in WebhookDeliveryHandlerError", () =>
+Deno.test("receive verifies before parsing payloads and wraps failures in WebhookAuthenticationError", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const { db } = yield* DatabaseClient;
@@ -32,9 +32,7 @@ Deno.test("receive verifies before parsing payloads and wraps failures in Webhoo
         signature: `sha256=${"0".repeat(64)}`,
       }).pipe(Effect.result);
       assert.ok(Result.isFailure(invalid));
-      assert.ok(invalid.failure instanceof WebhookDeliveryHandlerError);
-      assert.ok(invalid.failure.cause instanceof Error);
-      assert.equal(invalid.failure.cause.message, "Invalid webhook signature");
+      assert.ok(invalid.failure instanceof WebhookAuthenticationError);
       assert.deepEqual(yield* db.select().from(githubWebhookDeliveries), []);
       assert.deepEqual(yield* db.select().from(devinSessions), []);
 
@@ -55,7 +53,7 @@ Deno.test("receive verifies before parsing payloads and wraps failures in Webhoo
       );
       assert.equal(
         (yield* db.select().from(devinSessions).get())?.status,
-        "pending",
+        undefined,
       );
     }).pipe(Effect.provide(TestLive)),
   ));

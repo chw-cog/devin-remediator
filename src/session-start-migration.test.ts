@@ -92,7 +92,11 @@ Deno.test("startup migration preserves historical notifications, receipts, lease
           );
           assert.deepEqual(
             yield* sql`SELECT * FROM devin_sessions ORDER BY id`,
-            sessions,
+            sessions.map((row) => ({
+              ...row,
+              next_submission_at: "1970-01-01T00:00:00.000Z",
+              observation_requested: 0,
+            })),
           );
           assert.deepEqual(
             yield* sql`SELECT * FROM github_webhook_deliveries ORDER BY id`,

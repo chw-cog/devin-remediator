@@ -167,9 +167,9 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
         }
       });
       const sessions = yield* db.select().from(devinSessions);
-      assert.equal(sessions.length, 2);
+      assert.equal(sessions.length, 1);
       assert.equal(sessions.filter((s) => s.status === "submitting").length, 1);
-      assert.equal(sessions.filter((s) => s.status === "pending").length, 1);
+      assert.equal(sessions.filter((s) => s.status === "pending").length, 0);
       assert.equal(
         (yield* db.select().from(githubWebhookDeliveries)).length,
         2,
@@ -177,7 +177,7 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
       assert.equal(creates, 1);
       yield* Fiber.interrupt(fiber);
       assert.equal(stopped, true);
-      assert.equal((yield* db.select().from(devinSessions)).length, 2);
+      assert.equal((yield* db.select().from(devinSessions)).length, 1);
       yield* Effect.promise(() => assert.rejects(fetch(`${base}/health`)));
     }).pipe(Effect.scoped, Effect.provide(TestLive)),
   );
@@ -189,7 +189,7 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
   );
 });
 
-Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and skip nonmatching events without Devin calls", async () => {
+Deno.test("signed HTTP deliveries admit an issue once across delivery IDs and retain ignored event history", async () => {
   const creates: Parameters<DevinClient["Service"]["createSession"]>[0][] = [];
   const gets: string[] = [];
   const client = DevinClient.of({
@@ -366,7 +366,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
       }
       yield* deliver("matching", "push", JSON.stringify(envelope));
       const queued = yield* db.select().from(devinSessions);
-      assert.equal(queued.length, cases.length);
+      assert.equal(queued.length, 1);
       assert.ok(queued.every((session) => session.status === "pending"));
       assert.equal(creates.length, 0);
       yield* orchestra.tick;
@@ -375,7 +375,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
         assert.equal(
           first.find((session) => session.githubDeliveryId === entry.id)
             ?.status,
-          entry.status,
+          entry.status === "submitted" ? "submitted" : undefined,
         );
       }
       assert.equal(creates.length, 1);
@@ -386,24 +386,23 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
       yield* orchestra.tick;
       const sessions = yield* db.select().from(devinSessions);
       const deliveries = yield* db.select().from(githubWebhookDeliveries);
-      assert.equal(sessions.length, cases.length + 1);
+      assert.equal(sessions.length, 1);
       assert.equal(deliveries.length, cases.length + 1);
       assert.deepEqual(
         sessions.filter((session) => session.status === "skipped"),
         skipped,
       );
-      assert.equal(creates.length, 2);
+      assert.equal(creates.length, 1);
       assert.equal(
         new Set(
           sessions.filter((session) => session.status === "submitted")
             .map((session) => session.devinSessionId),
         ).size,
-        2,
+        1,
       );
       assert.deepEqual([...gets].sort(), [
         "http-remote-1",
         "http-remote-1",
-        "http-remote-2",
       ]);
       for (
         const entry of [...cases, {
@@ -419,7 +418,6 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
         assert.equal(saved?.issueNumber, 42);
       }
       assert.match(creates[0].prompt, /Delivery: matching/);
-      assert.match(creates[1].prompt, /Delivery: new-delivery-same-issue/);
       for (const request of creates) {
         assert.deepEqual(request.repos, ["owner/repo"]);
         assert.match(request.prompt, /Issue: 42/);
@@ -428,16 +426,13 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
       const customPayload = JSON.stringify(envelope);
       yield* deliver("custom", "pull_request", customPayload);
       yield* orchestra.tick;
-      assert.equal(creates.length, 3);
-      assert.deepEqual(creates[2], {
-        title: "Custom processor for custom",
-        prompt: customPayload,
-        repos: ["owner/repo"],
-      });
-      const customSession = (yield* db.select().from(devinSessions))
-        .find((session) => session.githubDeliveryId === "custom");
-      assert.equal(customSession?.status, "submitted");
-      assert.equal(customSession?.devinSessionId, "http-remote-3");
+      assert.equal(creates.length, 1);
+      assert.equal(
+        (yield* db.select().from(devinSessions)).find((session) =>
+          session.githubDeliveryId === "custom"
+        ),
+        undefined,
+      );
       const customDelivery = (yield* db.select().from(githubWebhookDeliveries))
         .find((delivery) => delivery.deliveryId === "custom");
       assert.equal(customDelivery?.eventName, "pull_request");

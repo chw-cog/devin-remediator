@@ -174,6 +174,7 @@ export class DevinSessionOrchestrator extends Context.Service<
             const rows = yield* repository.rejectSubmission(
               work.session,
               error.disposition === "retryable",
+              error.retryAt,
             );
             for (const row of rows) {
               yield* Effect.logWithLevel(
