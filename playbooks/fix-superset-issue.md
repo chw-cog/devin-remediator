@@ -51,13 +51,18 @@ applies at any step, including when the session budget runs low.
 If you cannot post or edit the comment or add the label, report the failed
 action and required access in your session response. Do not claim it succeeded.
 
+Before investigating, reproducing, or verifying an existing PR, confirm that
+the issue progress comment exists and save its ID or URL. Reuse it when
+resuming. Finding an existing fix does not waive this requirement.
+
 ## Procedure
 
 ### 1. Establish the report
 
 Read the issue, comments, attachments, and repository instructions. If an
-existing fix or active PR covers this defect, return its link instead of
-duplicating work.
+existing fix or active PR covers this defect, update the progress comment with
+the existing fix or PR link and what you have verified. Then follow the
+Completion instructions before returning its link instead of duplicating work.
 
 Establish expected and actual behavior from reproduction steps, screenshots,
 versions, browser, feature flags, customizations, data source, and logs. Use
