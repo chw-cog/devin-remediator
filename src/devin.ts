@@ -359,6 +359,10 @@ export class DevinClient extends Context.Service<DevinClient, {
     DevinPlaybook,
     DevinSubmissionError
   >;
+  readonly updatePlaybook: (
+    playbookId: string,
+    params: CreatePlaybookParams,
+  ) => Effect.Effect<DevinPlaybook, DevinSubmissionError>;
   readonly findPlaybookByMacro: (macro: string) => Effect.Effect<
     DevinPlaybook | undefined,
     DevinSubmissionError
@@ -428,6 +432,29 @@ export class DevinClient extends Context.Service<DevinClient, {
             Effect.mapError(submissionError),
           ),
         observeClient("createPlaybook"),
+      );
+
+      const updatePlaybook = Effect.fn("DevinClient.updatePlaybook")(
+        (playbookId: string, params: CreatePlaybookParams) =>
+          encodePlaybookBody(
+            HttpClientRequest.put(
+              `/playbooks/${encodeURIComponent(playbookId)}`,
+            ),
+            params,
+          ).pipe(
+            Effect.flatMap(client.execute),
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(DevinPlaybook)),
+            Effect.timeout("30 seconds"),
+            Effect.mapError(submissionError),
+            Effect.flatMap((playbook) =>
+              playbook.playbook_id === playbookId
+                ? Effect.succeed(playbook)
+                : Effect.fail(
+                  new DevinSubmissionError({ disposition: "permanent" }),
+                )
+            ),
+          ),
+        observeClient("updatePlaybook"),
       );
 
       const findPlaybookByMacro = Effect.fn("DevinClient.findPlaybookByMacro")(
@@ -717,6 +744,7 @@ export class DevinClient extends Context.Service<DevinClient, {
 
       return DevinClient.of({
         createPlaybook,
+        updatePlaybook,
         findPlaybookByMacro,
         createSession,
         listSessions,

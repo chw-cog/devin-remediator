@@ -9,7 +9,7 @@ import {
   References,
 } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
-import { playbook } from "../test/fixtures/playbook.ts";
+import { playbook, withPlaybookStartup } from "../test/fixtures/playbook.ts";
 import { createApp } from "./app.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
 import { AppLive } from "./index.ts";
@@ -124,7 +124,7 @@ const withPipeline = (
         ConfigProvider.ConfigProvider,
         ConfigProvider.fromUnknown(env),
       ),
-      Effect.provideService(FetchHttpClient.Fetch, fetch),
+      Effect.provideService(FetchHttpClient.Fetch, withPlaybookStartup(fetch)),
     ),
   );
 };

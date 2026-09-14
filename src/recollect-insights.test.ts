@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { withPlaybookStartup } from "../test/fixtures/playbook.ts";
 import * as DenoServices from "@effect/platform-deno/DenoServices";
 import { eq } from "drizzle-orm";
 import { ConfigProvider, Console, Effect, Layer, Result, Stdio } from "effect";
@@ -511,7 +512,10 @@ Deno.test("CLI recollection survives restart and normal orchestration generates 
             ),
           ),
         )),
-        Effect.provideService(FetchHttpClient.Fetch, fetch),
+        Effect.provideService(
+          FetchHttpClient.Fetch,
+          withPlaybookStartup(fetch),
+        ),
         Effect.provide(TestClock.layer()),
       ),
     );

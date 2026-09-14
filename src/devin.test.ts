@@ -305,6 +305,104 @@ Deno.test("createPlaybook rejects a macro without the required ! before HTTP", a
   assert.equal(result.failure.disposition, "permanent");
 });
 
+Deno.test("updatePlaybook PUTs authenticated JSON to the encoded existing ID", async () => {
+  const id = "playbook/with ?#";
+  const params = {
+    title: "Fix issue",
+    body: "Updated instructions.",
+    macro: "!fix-superset-issue",
+    structured_output_schema: { type: "object" },
+  };
+  const expected = { ...playbook, ...params, playbook_id: id };
+  let calls = 0;
+  const result = await runWithFetch(
+    DevinClient.use((client) => client.updatePlaybook(id, params)),
+    (input, init) => {
+      calls++;
+      assert.equal(
+        String(input),
+        "https://api.devin.ai/v3/organizations/org-test/playbooks/playbook%2Fwith%20%3F%23",
+      );
+      assert.equal(init?.method, "PUT");
+      const headers = new Headers(init.headers);
+      assert.equal(headers.get("authorization"), "Bearer cog_test-key");
+      assert.equal(headers.get("content-type"), "application/json");
+      assert.ok(init.body instanceof Uint8Array);
+      assert.deepEqual(JSON.parse(new TextDecoder().decode(init.body)), params);
+      return Promise.resolve(Response.json(expected));
+    },
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(result, expected);
+});
+
+for (const status of [403, 409, 422, 429, 503]) {
+  Deno.test(`updatePlaybook exposes HTTP ${status} without hidden retries`, async () => {
+    let calls = 0;
+    const result = await runWithFetch(
+      DevinClient.use((client) =>
+        client.updatePlaybook("playbook-test", { title: "Fix", body: "Fix" })
+          .pipe(Effect.result)
+      ),
+      () => {
+        calls++;
+        return Promise.resolve(new Response("", { status }));
+      },
+    );
+    assert.equal(calls, 1);
+    assert.ok(Result.isFailure(result));
+    assert.equal(result.failure.httpStatus, status);
+  });
+}
+
+for (
+  const body of [{ ...playbook, body: 42 }, {
+    ...playbook,
+    playbook_id: "other",
+  }]
+) {
+  Deno.test(`updatePlaybook rejects invalid response ${JSON.stringify(body)}`, async () => {
+    const result = await runWithFetch(
+      DevinClient.use((client) =>
+        client.updatePlaybook("playbook-test", { title: "Fix", body: "Fix" })
+          .pipe(Effect.result)
+      ),
+      () => Promise.resolve(Response.json(body)),
+    );
+    assert.ok(Result.isFailure(result));
+  });
+}
+
+Deno.test("updatePlaybook timeout aborts the request without retries", async () => {
+  const started = Promise.withResolvers<void>();
+  let calls = 0;
+  let aborted = false;
+  await runWithFetch(
+    Effect.gen(function* () {
+      const client = yield* DevinClient;
+      const fiber = yield* client.updatePlaybook(
+        "playbook-test",
+        { title: "Fix", body: "Fix" },
+      ).pipe(Effect.result, Effect.forkScoped);
+      yield* Effect.promise(() => started.promise);
+      yield* TestClock.adjust("30 seconds");
+      assert.ok(Result.isFailure(yield* Fiber.join(fiber)));
+      assert.equal(aborted, true);
+      assert.equal(calls, 1);
+    }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
+    (_input, init) => {
+      calls++;
+      started.resolve();
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+    },
+  );
+});
+
 for (
   const [status, disposition] of [
     [403, "permanent"],

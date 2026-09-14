@@ -1,5 +1,5 @@
-import { Context, Effect, Layer, Schema, Semaphore } from "effect";
-import { type DevinClient, DevinSubmissionError } from "./devin.ts";
+import { Context, Effect, Layer, Schema } from "effect";
+import { DevinClient, DevinSubmissionError } from "./devin.ts";
 import type { DeliveryRecord } from "./devin-session-repository.ts";
 import { AppConfig } from "./config.ts";
 import { observe } from "./logging.ts";
@@ -37,49 +37,51 @@ export class WebhookEventProcessors extends Context.Service<
     WebhookEventProcessors,
     Effect.gen(function* () {
       const config = yield* AppConfig;
-      const playbookLock = yield* Semaphore.make(1);
-      const ensureIssuePlaybook = Effect.fn("ensureIssuePlaybook")(
-        function* (client: DevinClient["Service"]) {
-          const existing = yield* client.findPlaybookByMacro(
-            issuePlaybook.macro,
-          );
-          if (existing) {
-            yield* Effect.logDebug("playbook.reused").pipe(
-              Effect.annotateLogs({ playbook_id: existing.playbook_id }),
-            );
-            return existing;
-          }
-          const body = yield* Effect.tryPromise({
-            try: () =>
-              Deno.readTextFile(
-                new URL(
-                  `../playbooks/${issuePlaybook.macro.slice(1)}.md`,
-                  import.meta.url,
-                ),
+      const client = yield* DevinClient;
+      const playbook = yield* Effect.gen(function* () {
+        const body = yield* Effect.tryPromise({
+          try: () =>
+            Deno.readTextFile(
+              new URL(
+                `../playbooks/${issuePlaybook.macro.slice(1)}.md`,
+                import.meta.url,
               ),
-            catch: () => new DevinSubmissionError({ disposition: "retryable" }),
-          }).pipe(
-            Effect.tapError(() => Effect.logError("playbook.read_failed")),
-          );
-          return yield* client.createPlaybook({ ...issuePlaybook, body }).pipe(
-            Effect.tap((playbook) =>
-              Effect.logInfo("playbook.created").pipe(
-                Effect.annotateLogs({ playbook_id: playbook.playbook_id }),
-              )
             ),
+          catch: () => new DevinSubmissionError({ disposition: "retryable" }),
+        }).pipe(
+          Effect.tapError(() => Effect.logError("playbook.read_failed")),
+        );
+        const definition = {
+          ...issuePlaybook,
+          body,
+          structured_output_schema: remediationOutputSchema,
+        };
+        let existing = yield* client.findPlaybookByMacro(issuePlaybook.macro);
+        if (!existing) {
+          const created = yield* client.createPlaybook(definition).pipe(
             Effect.catch((error) =>
               error.httpStatus === 409
-                ? client.findPlaybookByMacro(issuePlaybook.macro).pipe(
-                  Effect.flatMap((playbook) =>
-                    playbook ? Effect.succeed(playbook) : Effect.fail(error)
-                  ),
-                )
+                ? Effect.succeed(undefined)
                 : Effect.fail(error)
             ),
           );
-        },
-        playbookLock.withPermits(1),
-        // No session POST has happened yet, even if playbook creation was ambiguous.
+          if (created) return created;
+          existing = yield* client.findPlaybookByMacro(issuePlaybook.macro);
+          if (!existing) {
+            return yield* new DevinSubmissionError({
+              disposition: "retryable",
+              httpStatus: 409,
+            });
+          }
+        }
+        if (
+          existing.access_type !== "org" ||
+          existing.org_id !== config.devinOrganizationId
+        ) {
+          return yield* new DevinSubmissionError({ disposition: "permanent" });
+        }
+        return yield* client.updatePlaybook(existing.playbook_id, definition);
+      }).pipe(
         Effect.mapError((error) =>
           new DevinSubmissionError({
             disposition: error.disposition === "ambiguous" ||
@@ -91,7 +93,15 @@ export class WebhookEventProcessors extends Context.Service<
               : { httpStatus: error.httpStatus }),
           })
         ),
-        observe("WebhookEventProcessors", "ensureIssuePlaybook"),
+        Effect.tap((playbook) =>
+          Effect.logInfo("playbook.synchronized").pipe(
+            Effect.annotateLogs({ playbook_id: playbook.playbook_id }),
+          )
+        ),
+        Effect.tapError(() =>
+          Effect.logError("playbook.synchronization_failed")
+        ),
+        observe("WebhookEventProcessors", "synchronizePlaybook"),
       );
 
       const issuesProcessor: WebhookEventProcessor = Effect.fn(
@@ -111,7 +121,6 @@ export class WebhookEventProcessors extends Context.Service<
             return { _tag: "Skipped" };
           }
 
-          const playbook = yield* ensureIssuePlaybook(client);
           yield* Effect.logInfo("session.submission_started").pipe(
             Effect.annotateLogs({ playbook_id: playbook.playbook_id }),
           );

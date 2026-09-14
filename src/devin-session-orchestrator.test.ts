@@ -12,7 +12,7 @@ import {
   Result,
 } from "effect";
 import { TestClock } from "effect/testing";
-import { playbook } from "../test/fixtures/playbook.ts";
+import { playbook, withPlaybookStartup } from "../test/fixtures/playbook.ts";
 import { FetchHttpClient } from "effect/unstable/http";
 import { type AppDatabase, DatabaseClient, DatabaseError } from "./database.ts";
 import { type Env } from "./config.ts";
@@ -81,6 +81,8 @@ function fakeClient() {
     > => Effect.succeed(playbook),
     createPlaybook: (): ReturnType<DevinClient["Service"]["createPlaybook"]> =>
       Effect.die("Playbook already exists"),
+    updatePlaybook: (): ReturnType<DevinClient["Service"]["updatePlaybook"]> =>
+      Effect.succeed(playbook),
     create: (): ReturnType<DevinClient["Service"]["createSession"]> =>
       Effect.succeed({
         ...remote,
@@ -106,6 +108,7 @@ function fakeClient() {
   const client = DevinClient.of({
     diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
     createPlaybook: () => behavior.createPlaybook(),
+    updatePlaybook: () => behavior.updatePlaybook(),
     findPlaybookByMacro: () => behavior.findPlaybook(),
     createSession: (params) =>
       Effect.suspend(() => {
@@ -439,7 +442,7 @@ Deno.test("analysis collection runs through the real Devin client and persists g
       ]);
     }).pipe(
       Effect.provide(live),
-      Effect.provideService(FetchHttpClient.Fetch, fetch),
+      Effect.provideService(FetchHttpClient.Fetch, withPlaybookStartup(fetch)),
       Effect.provide(TestClock.layer()),
       Effect.scoped,
     ),
@@ -853,7 +856,7 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
       yield* orchestra.tick;
     }).pipe(
       Effect.provide(layer),
-      Effect.provideService(FetchHttpClient.Fetch, fetch),
+      Effect.provideService(FetchHttpClient.Fetch, withPlaybookStartup(fetch)),
     ),
   );
   assert.equal(posts, 1);
@@ -861,35 +864,29 @@ Deno.test("issue processing recovers a lost HTTP creation response through pagin
 });
 
 orchestrationTest(
-  "a lost playbook response retries the prerequisite next tick and reuses it without session recovery",
+  "ticks use the startup playbook without looking it up or creating it again",
   ({ db, orchestra, fake }) =>
     Effect.gen(function* () {
-      let exists = false;
-      let playbookPosts = 0;
       fake.behavior.findPlaybook = () =>
-        Effect.succeed(exists ? playbook : undefined);
-      fake.behavior.createPlaybook = () => {
-        playbookPosts++;
-        exists = true;
-        return Effect.fail(
-          new DevinSubmissionError({
-            disposition: "ambiguous",
-          }),
-        );
-      };
+        Effect.die("Tick must not look up the startup playbook");
+      fake.behavior.createPlaybook = () =>
+        Effect.die("Tick must not create a playbook");
+      fake.behavior.updatePlaybook = () =>
+        Effect.die("Tick must not update a playbook");
       yield* seed(db, "playbook");
+      yield* seed(db, "second-playbook");
       yield* orchestra.tick;
-      assert.equal((yield* row(db, "playbook")).status, "pending");
-      assert.equal(fake.creates.length, 0);
-      assert.deepEqual(fake.lookups, []);
       yield* orchestra.tick;
       const saved = yield* row(db, "playbook");
       assert.equal(saved.status, "submitted");
       assert.equal(saved.devinSessionId, "devin-created-1");
-      assert.equal(saved.attempts, 2);
-      assert.equal(playbookPosts, 1);
-      assert.equal(fake.creates.length, 1);
-      assert.equal(fake.creates[0].playbook_id, "playbook-test");
+      assert.equal(saved.attempts, 1);
+      assert.equal(fake.creates.length, 2);
+      assert.ok(
+        fake.creates.every((request) =>
+          request.playbook_id === "playbook-test"
+        ),
+      );
       assert.deepEqual(fake.lookups, []);
     }),
 );
@@ -1176,7 +1173,7 @@ Deno.test("polling reconciles paginated list responses through the real client w
       assert.ok(missingAfter.nextObservationAt > missingAfter.updatedAt);
     }).pipe(
       Effect.provide(layer),
-      Effect.provideService(FetchHttpClient.Fetch, fetch),
+      Effect.provideService(FetchHttpClient.Fetch, withPlaybookStartup(fetch)),
       Effect.scoped,
     ),
   );

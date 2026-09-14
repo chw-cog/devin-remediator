@@ -13,6 +13,7 @@ import { GitHubCommentNotifier } from "../../src/github-comment-notifier.ts";
 import { SessionAdministration } from "../../src/session-administration.ts";
 import { devinSessions, githubWebhookDeliveries } from "../../src/schemas.ts";
 import { WebhookEventProcessors } from "../../src/webhook-event-processors.ts";
+import { withPlaybookStartup } from "./playbook.ts";
 
 export const recoveryRemote = (
   id = "remote-one",
@@ -101,7 +102,10 @@ export function recoveryTest<E>(
     try {
       await Effect.runPromise(effect.pipe(
         Effect.provide(recoveryLayer(`${dir}/recovery.sqlite`)),
-        Effect.provideService(FetchHttpClient.Fetch, fetch),
+        Effect.provideService(
+          FetchHttpClient.Fetch,
+          withPlaybookStartup(fetch),
+        ),
         Effect.provide(TestClock.layer()),
         Effect.provide(Logger.layer([])),
         Effect.scoped,
@@ -112,11 +116,13 @@ export function recoveryTest<E>(
   });
 }
 
-export const missingFetch: typeof globalThis.fetch = (_input, init) => {
-  if (init?.method !== "GET") {
-    throw new Error("Remote writes forbidden in recovery tests");
-  }
-  return Promise.resolve(
-    Response.json({ items: [], has_next_page: false, end_cursor: null }),
-  );
-};
+export const missingFetch: typeof globalThis.fetch = withPlaybookStartup(
+  (_input, init) => {
+    if (init?.method !== "GET") {
+      throw new Error("Remote writes forbidden in recovery tests");
+    }
+    return Promise.resolve(
+      Response.json({ items: [], has_next_page: false, end_cursor: null }),
+    );
+  },
+);

@@ -509,6 +509,8 @@ for (const recovered of [false, true]) {
           const client = DevinClient.of({
             diagnoseSession: unexpected,
             createPlaybook: unexpected,
+            updatePlaybook: (_id, params) =>
+              Effect.succeed({ ...playbook, ...params }),
             findPlaybookByMacro: () => Effect.succeed(playbook),
             createSession: () =>
               Effect.sync(() => {
@@ -598,8 +600,8 @@ for (const recovered of [false, true]) {
             Effect.provideService(GitHubCommentNotifier, notifier),
             Effect.provideService(DatabaseClient, { db }),
             Effect.provideService(DevinSessionRepository, repository),
-            Effect.provideService(DevinClient, client),
             Effect.provide(WebhookEventProcessors.layer),
+            Effect.provideService(DevinClient, client),
             Effect.provide(config()),
           );
         }),
@@ -1265,7 +1267,9 @@ notificationTest(
       const client = DevinClient.of({
         diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
         createPlaybook: unexpected,
-        findPlaybookByMacro: unexpected,
+        updatePlaybook: (_id, params) =>
+          Effect.succeed({ ...playbook, ...params }),
+        findPlaybookByMacro: () => Effect.succeed(playbook),
         createSession: unexpected,
         listSessions: () =>
           Effect.sync(() => {
@@ -1295,8 +1299,8 @@ notificationTest(
         Effect.provideService(GitHubCommentNotifier, notifier),
         Effect.provideService(DatabaseClient, { db }),
         Effect.provideService(DevinSessionRepository, repository),
-        Effect.provideService(DevinClient, client),
         Effect.provide(WebhookEventProcessors.layer),
+        Effect.provideService(DevinClient, client),
         Effect.provide(config()),
       );
       assert.deepEqual(calls, ["token", "devin-list", "comment"]);

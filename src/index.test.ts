@@ -4,20 +4,75 @@ import { createHmac } from "node:crypto";
 import { ConfigProvider, Effect, Fiber, Layer, Result } from "effect";
 import { createApp } from "./app.ts";
 import { type AppDatabase, DatabaseClient } from "./database.ts";
-import { DevinClient } from "./devin.ts";
+import { DevinClient, DevinSubmissionError } from "./devin.ts";
+import { FetchHttpClient } from "effect/unstable/http";
 import { playbook } from "../test/fixtures/playbook.ts";
 import { DevinSessionOrchestrator } from "./devin-session-orchestrator.ts";
 import { DevinSessionRepository } from "./devin-session-repository.ts";
 import { GitHubCommentNotifier } from "./github-comment-notifier.ts";
 import { WebhookDeliveryHandler } from "./webhook-delivery-handler.ts";
 import { AppConfig } from "./config.ts";
-import { applicationEnvironment, runApplication } from "./index.ts";
+import { applicationEnvironment, AppLive, runApplication } from "./index.ts";
 import { devinSessions, githubWebhookDeliveries } from "./schemas.ts";
 import {
   type WebhookEventOutcome,
   type WebhookEventProcessor,
   WebhookEventProcessors,
 } from "./webhook-event-processors.ts";
+
+for (const stage of ["lookup", "create", "update"]) {
+  Deno.test(`application startup ${stage} failure prevents the HTTP server and session dispatch`, async () => {
+    let listening = false;
+    const calls: string[] = [];
+    const result = await Effect.runPromise(
+      runApplication({
+        hostname: "127.0.0.1",
+        port: 0,
+        onListen: () => {
+          listening = true;
+        },
+      }).pipe(
+        Effect.provide(AppLive),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            DEVIN_API_KEY: "test-key",
+            DEVIN_ORGANIZATION_ID: "org-test",
+            GITHUB_WEBHOOK_SECRET: "test-secret",
+            SQLITE_DB_FILEPATH: ":memory:",
+          }),
+        ),
+        Effect.provideService(FetchHttpClient.Fetch, (input, init) => {
+          const path = new URL(String(input)).pathname;
+          const method = init?.method ?? "GET";
+          calls.push(`${method} ${path}`);
+          assert.ok(path.includes("/playbooks"));
+          if (method === "GET" && stage !== "lookup") {
+            return Promise.resolve(Response.json({
+              items: stage === "create" ? [] : [playbook],
+              has_next_page: false,
+            }));
+          }
+          return Promise.resolve(new Response("", { status: 503 }));
+        }),
+        Effect.timeout("2 seconds"),
+        Effect.result,
+      ),
+    );
+    assert.ok(Result.isFailure(result));
+    assert.ok(result.failure instanceof DevinSubmissionError);
+    assert.equal(result.failure.httpStatus, 503);
+    assert.equal(listening, false);
+    assert.deepEqual(calls, [
+      "GET /v3/organizations/org-test/playbooks",
+      ...(stage === "lookup" ? [] : [
+        stage === "create"
+          ? "POST /v3/organizations/org-test/playbooks"
+          : "PUT /v3/organizations/org-test/playbooks/playbook-test",
+      ]),
+    ]);
+  });
+}
 
 Deno.test("Hono serves durable webhooks and health while the scoped orchestrator awaits Devin; shutdown joins it before closing SQLite", async () => {
   const listening = Promise.withResolvers<number>();
@@ -39,6 +94,8 @@ Deno.test("Hono serves durable webhooks and health while the scoped orchestrator
     Layer.provide(Layer.succeed(DevinClient, {
       diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
       createPlaybook: () => Effect.die("Playbook already exists"),
+      updatePlaybook: (_id, params) =>
+        Effect.succeed({ ...playbook, ...params }),
       findPlaybookByMacro: () => Effect.succeed(playbook),
       createSession: () =>
         Effect.sync(() => {
@@ -138,6 +195,7 @@ Deno.test("signed HTTP deliveries route through SQLite once per delivery ID and 
   const client = DevinClient.of({
     diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
     createPlaybook: () => Effect.die("Playbook already exists"),
+    updatePlaybook: (_id, params) => Effect.succeed({ ...playbook, ...params }),
     findPlaybookByMacro: () => Effect.succeed(playbook),
     createSession: (request) =>
       Effect.sync(() => {

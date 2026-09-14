@@ -17,8 +17,8 @@ export const AppLive = Layer.mergeAll(
   Metrics.layer.pipe(Layer.provide(GitHubClient.metricsLayer)),
   DevinSessionOrchestrator.layer.pipe(
     Layer.provide(DevinSessionRepository.layer),
-    Layer.provide(DevinClient.layer),
     Layer.provide(WebhookEventProcessors.layer),
+    Layer.provide(DevinClient.layer),
     Layer.provide(GitHubCommentNotifier.layer),
   ),
 ).pipe(

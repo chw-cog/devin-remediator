@@ -9,6 +9,61 @@ import {
 import { playbook } from "../test/fixtures/playbook.ts";
 import type { DeliveryRecord } from "./devin-session-repository.ts";
 import { WebhookEventProcessors } from "./webhook-event-processors.ts";
+import { remediationOutputSchema } from "./remediation-output.ts";
+
+for (const stale of [true, false]) {
+  Deno.test(`startup updates ${stale ? "stale" : "unchanged"} playbook before publishing handlers`, async () => {
+    const desired = {
+      title: "Fix Superset issue",
+      macro: "!fix-superset-issue",
+      body: await Deno.readTextFile(
+        new URL("../playbooks/fix-superset-issue.md", import.meta.url),
+      ),
+      structured_output_schema: remediationOutputSchema,
+    };
+    const remote = stale ? playbook : { ...playbook, ...desired };
+    const calls: string[] = [];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const processors = yield* WebhookEventProcessors;
+        assert.ok(processors.has("issues"));
+        assert.deepEqual(calls, ["GET", "PUT"]);
+      }).pipe(
+        Effect.provide(WebhookEventProcessors.layer),
+        Effect.provide(DevinClient.layer),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            DEVIN_API_KEY: "cog_test-key",
+            DEVIN_ORGANIZATION_ID: "org-test",
+            GITHUB_WEBHOOK_SECRET: "test-secret",
+          }),
+        ),
+        Effect.provideService(FetchHttpClient.Fetch, (input, init) => {
+          calls.push(init?.method ?? "GET");
+          if (init?.method === "GET") {
+            return Promise.resolve(Response.json({
+              items: [remote],
+              has_next_page: false,
+              end_cursor: null,
+            }));
+          }
+          assert.equal(init?.method, "PUT");
+          assert.equal(
+            new URL(String(input)).pathname,
+            "/v3/organizations/org-test/playbooks/playbook-test",
+          );
+          assert.ok(init.body instanceof Uint8Array);
+          assert.deepEqual(
+            JSON.parse(new TextDecoder().decode(init.body)),
+            desired,
+          );
+          return Promise.resolve(Response.json({ ...remote, ...desired }));
+        }),
+      ),
+    );
+  });
+}
 
 const issuesProcessor = Effect.fnUntraced(
   function* (
@@ -21,6 +76,8 @@ const issuesProcessor = Effect.fnUntraced(
     return yield* processor(delivery, client);
   },
   Effect.provide(WebhookEventProcessors.layer),
+  (effect, _delivery, client) =>
+    effect.pipe(Effect.provideService(DevinClient, client)),
   Effect.provideService(
     ConfigProvider.ConfigProvider,
     ConfigProvider.fromUnknown({
@@ -49,6 +106,7 @@ Deno.test("issues processor creates a session for the exact added devin label an
   const requests: Parameters<DevinClient["Service"]["createSession"]>[0][] = [];
   const client = DevinClient.of({
     diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
+    updatePlaybook: (_id, params) => Effect.succeed({ ...playbook, ...params }),
     createPlaybook: () =>
       Effect.die("Existing playbook must not be overwritten"),
     findPlaybookByMacro: (macro) => {
@@ -111,13 +169,14 @@ for (
     ["invalid stored JSON", "{"],
   ]
 ) {
-  Deno.test(`issues processor skips ${name} without calling Devin`, async () => {
+  Deno.test(`issues processor skips ${name} without creating a session`, async () => {
     const client = DevinClient.of({
       diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
       createPlaybook: () =>
         Effect.die("Skipped delivery must not create playbooks"),
-      findPlaybookByMacro: () =>
-        Effect.die("Skipped delivery must not look up playbooks"),
+      findPlaybookByMacro: () => Effect.succeed(playbook),
+      updatePlaybook: (_id, params) =>
+        Effect.succeed({ ...playbook, ...params }),
       createSession: () => Effect.die("Skipped delivery must not create"),
       listSessions: () => Effect.die("Skipped delivery must not list"),
       findSessionsByTag: () => Effect.die("Skipped delivery must not recover"),
@@ -140,6 +199,8 @@ for (const disposition of ["retryable", "permanent", "ambiguous"] as const) {
     const error = new DevinSubmissionError({ disposition, httpStatus: 503 });
     const client = DevinClient.of({
       diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
+      updatePlaybook: (_id, params) =>
+        Effect.succeed({ ...playbook, ...params }),
       createPlaybook: () => Effect.die("Playbook already exists"),
       findPlaybookByMacro: () => Effect.succeed(playbook),
       createSession: () => Effect.fail(error),
@@ -162,6 +223,7 @@ for (const disposition of ["retryable", "permanent", "ambiguous"] as const) {
 const unusedClient = DevinClient.of({
   diagnoseSession: () => Effect.die("Unexpected diagnostic GET"),
   createPlaybook: () => Effect.die("Unexpected playbook creation"),
+  updatePlaybook: () => Effect.die("Unexpected playbook update"),
   findPlaybookByMacro: () => Effect.die("Unexpected playbook lookup"),
   createSession: () => Effect.die("Unexpected session creation"),
   listSessions: () => Effect.die("Unexpected session listing"),
@@ -170,7 +232,7 @@ const unusedClient = DevinClient.of({
   generateSessionInsights: () => Effect.die("Unexpected insights generation"),
 });
 
-for (const stage of ["lookup", "create"] as const) {
+for (const stage of ["lookup", "create", "update"] as const) {
   for (
     const [disposition, httpStatus, expected] of [
       ["permanent", 403, "permanent"],
@@ -185,8 +247,11 @@ for (const stage of ["lookup", "create"] as const) {
         issuesProcessor(delivery, {
           ...unusedClient,
           findPlaybookByMacro: () =>
-            stage === "lookup" ? Effect.fail(error) : Effect.succeed(undefined),
+            stage === "lookup"
+              ? Effect.fail(error)
+              : Effect.succeed(stage === "update" ? playbook : undefined),
           createPlaybook: () => Effect.fail(error),
+          updatePlaybook: () => Effect.fail(error),
         }).pipe(Effect.result),
       );
       assert.ok(Result.isFailure(result));
@@ -217,11 +282,63 @@ Deno.test({
   },
 });
 
+for (const conflict of [false, true]) {
+  for (
+    const [scope, remote] of [
+      ["enterprise", { ...playbook, access_type: "enterprise", org_id: null }],
+      ["foreign organization", { ...playbook, org_id: "org-other" }],
+    ] as const
+  ) {
+    Deno.test(`startup rejects ${scope} playbook from ${conflict ? "conflict re-read" : "initial lookup"} without updates or sessions`, async () => {
+      let lookups = 0;
+      let creates = 0;
+      let updates = 0;
+      let sessions = 0;
+      const result = await Effect.runPromise(
+        issuesProcessor(delivery, {
+          ...unusedClient,
+          findPlaybookByMacro: () => {
+            lookups++;
+            return Effect.succeed(
+              conflict && lookups === 1 ? undefined : remote,
+            );
+          },
+          createPlaybook: () => {
+            creates++;
+            return Effect.fail(
+              new DevinSubmissionError({
+                disposition: "permanent",
+                httpStatus: 409,
+              }),
+            );
+          },
+          updatePlaybook: () => {
+            updates++;
+            return Effect.succeed(remote);
+          },
+          createSession: () => {
+            sessions++;
+            return Effect.die("Startup must reject the playbook first");
+          },
+        }).pipe(Effect.result),
+      );
+      assert.ok(Result.isFailure(result));
+      assert.ok(result.failure instanceof DevinSubmissionError);
+      assert.equal(result.failure.disposition, "permanent");
+      assert.equal(lookups, conflict ? 2 : 1);
+      assert.equal(creates, conflict ? 1 : 0);
+      assert.equal(updates, 0);
+      assert.equal(sessions, 0);
+    });
+  }
+}
+
 for (const found of [true, false]) {
-  Deno.test(`playbook conflict is re-read; matching playbook ${found ? "is reused" : "must exist before submitting"}`, async () => {
+  Deno.test(`playbook conflict is re-read; matching playbook ${found ? "is updated" : "must exist before submitting"}`, async () => {
     let lookups = 0;
     let creates = 0;
     let sessions = 0;
+    let updates = 0;
     const result = await Effect.runPromise(
       issuesProcessor(delivery, {
         ...unusedClient,
@@ -237,6 +354,17 @@ for (const found of [true, false]) {
               httpStatus: 409,
             }),
           );
+        },
+        updatePlaybook: (id, params) => {
+          updates++;
+          assert.equal(id, playbook.playbook_id);
+          assert.equal(params.title, "Fix Superset issue");
+          assert.notEqual(params.body, playbook.body);
+          assert.deepEqual(
+            params.structured_output_schema,
+            remediationOutputSchema,
+          );
+          return Effect.succeed({ ...playbook, ...params });
         },
         createSession: (params) => {
           sessions++;
@@ -257,6 +385,7 @@ for (const found of [true, false]) {
     );
     assert.equal(lookups, 2);
     assert.equal(creates, 1);
+    assert.equal(updates, found ? 1 : 0);
     assert.equal(sessions, found ? 1 : 0);
     if (found) {
       assert.ok(Result.isSuccess(result));
@@ -272,7 +401,7 @@ for (const found of [true, false]) {
   });
 }
 
-Deno.test("concurrent issues create one playbook with the supplied content before sessions; a fresh layer reuses it", async () => {
+Deno.test("concurrent issues share one startup playbook; a fresh startup updates the same ID", async () => {
   const expectedPlaybookBody = await Deno.readTextFile(
     new URL("../playbooks/fix-superset-issue.md", import.meta.url),
   );
@@ -299,8 +428,18 @@ Deno.test("concurrent issues create one playbook with the supplied content befor
         title: "Fix Superset issue",
         macro: "!fix-superset-issue",
         body: expectedPlaybookBody,
+        structured_output_schema: remediationOutputSchema,
       });
       stored = { ...playbook, ...body };
+      return Promise.resolve(Response.json(stored));
+    }
+    if (path === "playbook-test") {
+      assert.equal(init.method, "PUT");
+      assert.ok(stored);
+      assert.equal(body.body, expectedPlaybookBody);
+      assert.equal(body.title, "Fix Superset issue");
+      assert.deepEqual(body.structured_output_schema, remediationOutputSchema);
+      stored = { ...stored, ...body };
       return Promise.resolve(Response.json(stored));
     }
     assert.equal(path, "sessions");
@@ -422,6 +561,7 @@ Deno.test("concurrent issues create one playbook with the supplied content befor
   }
   assert.equal(sessions, 4);
   assert.equal(calls.filter((call) => call === "POST playbooks").length, 1);
-  assert.equal(calls.filter((call) => call === "GET playbooks").length, 4);
+  assert.equal(calls.filter((call) => call === "GET playbooks").length, 2);
+  assert.equal(calls.filter((call) => call === "PUT playbook-test").length, 1);
   assert.ok(calls.indexOf("POST playbooks") < calls.indexOf("POST sessions"));
 });

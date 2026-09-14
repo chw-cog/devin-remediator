@@ -42,6 +42,19 @@ The server listens on `http://localhost:8000`. Migrations run automatically, and
 SQLite data persists in a Docker volume. Recreate the app container after
 changing its environment settings.
 
+At startup, the app creates or updates the `!fix-superset-issue` playbook from
+[`playbooks/fix-superset-issue.md`](playbooks/fix-superset-issue.md), including
+the output schema. Existing playbooks are updated even when unchanged. All
+sessions reuse that ID; ticks do not upload the playbook again. If
+synchronization fails, startup fails before the server accepts requests. Devin
+must be reachable, and the API key needs organization playbook-management
+permission.
+
+Restart after changing the deployed playbook file; rebuild the image for changes
+to the bundled file. Run one deployment that owns this playbook. Overlapping
+versions and manual edits are unsupported. Devin's handling of playbook updates
+for already-running sessions is unverified.
+
 ### Connect GitHub and trigger remediation
 
 For local webhook forwarding through [Smee](https://smee.io), run:
