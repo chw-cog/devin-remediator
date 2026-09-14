@@ -109,8 +109,9 @@ provide repeatable verification steps.
 ### 5. Verify
 
 Repeat the original reproduction under equivalent conditions on the same
-application, API, or command. Capture the passing result. Unit tests alone do
-not verify browser or integration failures.
+application, API, or command. Capture the passing result. When the fix can be
+verified in a browser, take screenshots or record a video demonstrating the fix.
+Unit tests alone do not verify browser or integration failures.
 
 Run regression and affected tests, required checks, and relevant adjacent
 scenarios. For UI bugs, capture before/after evidence in the reported browser
@@ -122,6 +123,8 @@ Review the diff. Inconclusive or different-surface results are not passes.
 
 After local verification, open one PR using the current template. Include the
 issue, cause, fix, reproduction, verification, and limitations.
+In the PR's verification section, include relevant screenshots or videos captured
+during the process.
 
 Check PR state before each CI poll, edit, retry, or push. If closed or merged,
 stop and report the outcome. Do not reopen or replace the PR.
