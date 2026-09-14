@@ -4,6 +4,7 @@ node_modules/
 *.sqlite-wal
 .env
 .env.*
+!.env.example
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
